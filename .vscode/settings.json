@@ -1,0 +1,59 @@
+{
+  // The following should be in your user settings.
+  // You can just uncomment it here if you'd prefer.
+  // "files.readonlyInclude": {
+  //   "**/.cargo/registry/src/**/*.rs": true,
+  //   "**/lib/rustlib/src/rust/library/**/*.rs": true
+  // },
+
+  // Unset default formatter. Use language specific settings for formatters.
+  "editor.defaultFormatter": null,
+
+  // Enable format on save.
+  "editor.formatOnSave": true,
+
+  // Use clippy as the rust-analyzer's check command.
+  "rust-analyzer.check.command": "clippy",
+
+  // Pass `--all-features` flag to cargo.
+  "rust-analyzer.cargo.features": "all",
+
+  // JSON specific settings.
+  "[json]": {
+    // Format with Prettier.
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+
+  // JSONC specific settings.
+  "[jsonc]": {
+    // Format with Prettier.
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+
+  // Rust specific settings.
+  "[rust]": {
+    // Format with Rust analyzer.
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+
+  // TOML specific settings.
+  "[toml]": {
+    // Format with Even Better TOML.
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+
+  // Words to add to workspace dictionary:
+  "cSpell.words": ["clippy", "viell"],
+
+  // Words to ignore in spell-checking.
+  "cSpell.ignoreWords": [
+    "MSVC",
+    "Swatinem",
+    "dtolnay",
+    "expl_impl_clone_on_copy",
+    "linkedlist",
+    "rustc",
+    "rustfmt",
+    "unexpected_cfgs"
+  ]
+}

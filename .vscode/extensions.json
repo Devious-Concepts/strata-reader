@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "esbenp.prettier-vscode",
+    "fill-labs.dependi",
+    "rust-lang.rust-analyzer",
+    "streetsidesoftware.code-spell-checker",
+    "tamasfe.even-better-toml",
+    "swellaby.vscode-rust-test-adapter",
+    "github.vscode-github-actions",
+    "vadimcn.vscode-lldb"
+  ]
+}
