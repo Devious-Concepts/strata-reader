@@ -48,9 +48,11 @@ impl Buffer {
     }
 
     /// Return a reference slice to the buffer
+    #[expect(clippy::indexing_slicing, reason = "The invariant makes it safe")]
     #[inline]
     pub fn buf(&self) -> &[u8] {
-        &self.buf
+        // We need to slice here in case the internal buffer is a bit larger.
+        &self.buf[..self.cap]
     }
 
     /// The capacity of the buffer
@@ -183,28 +185,86 @@ impl Buffer {
         self.cap = next;
     }
 
-    /// Fill buffer without growth
-    pub fn fill(&mut self, reader: impl Read) -> io::Result<usize> {
-        todo!()
+    /// Fill available space in the buffer and return the number of bytes read.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "The invariant makes it safe"
+    )]
+    pub fn fill(&mut self, mut reader: impl Read) -> io::Result<usize> {
+        let mut bytes_read = 0;
+
+        // Check if there is space available to fill
+        if self.len < self.cap {
+            // Read to fill the remaining space.
+            bytes_read = reader.read(&mut self.buf[self.len..self.cap])?;
+
+            // Increase the length by the number of bytes read.
+            self.len += bytes_read;
+        }
+
+        Ok(bytes_read)
     }
 
     /// Fill buffer and grow to fit the requested amount
-    pub fn fill_amount(&mut self, reader: impl Read, amt: usize) -> io::Result<&[u8]> {
-        todo!()
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "The invariant makes it safe"
+    )]
+    pub fn fill_amount(&mut self, mut reader: impl Read, amt: usize) -> io::Result<usize> {
+        let mut total_bytes_read = 0;
+
+        // Loop until we've read enough bytes or break
+        while total_bytes_read < amt {
+            if self.cap - self.len == 0 {
+                if self.cap < PRACTICAL_MAX_SIZE {
+                    // There is no more space available, grow to the next size.
+                    self.grow();
+                } else {
+                    // Can't grow anymore.
+                    break;
+                }
+            }
+
+            // Get remaining amount to read.
+            let remaining = amt - total_bytes_read;
+
+            let bytes_read = if self.cap - self.len >= remaining {
+                // We have enough space, so just read the requested amount.
+                reader.read(&mut self.buf[self.len..self.len + remaining])?
+            } else {
+                // We don't have enough space, so just fill the space we have.
+                reader.read(&mut self.buf[self.len..self.cap])?
+            };
+
+            // Increase the length by the number of bytes read.
+            self.len += bytes_read;
+
+            // Increase the total number of bytes read.
+            total_bytes_read += bytes_read;
+
+            if bytes_read == 0 {
+                // We've hit EOF.
+                break;
+            }
+        }
+
+        Ok(total_bytes_read)
     }
 
     /// Fill buffer while a predicate is true and grow to fit
-    pub fn fill_while<P: FnMut(u8) -> bool>(
+    pub fn fill_while<P: Fn(char) -> bool>(
         &mut self,
-        reader: impl Read,
+        mut reader: impl Read,
         predicate: P,
-    ) -> io::Result<&[u8]> {
-        todo!()
+    ) -> io::Result<usize> {
+        todo!();
     }
 
     /// Fill buffer until a delimiter is encountered and grow to fit
-    pub fn fill_until(&mut self, reader: impl Read, delimiter: char) -> io::Result<&[u8]> {
-        todo!()
+    pub fn fill_until(&mut self, mut reader: impl Read, delimiter: char) -> io::Result<usize> {
+        todo!();
     }
 }
 
