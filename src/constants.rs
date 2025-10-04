@@ -14,7 +14,7 @@
 //!
 //! The following mathematical relationships must hold between the constants:
 //!
-//! - `CHUNK_SIZE` is a power of 2 and a multiple of 1 KiB (1024 bytes)
+//! - `CHUNK_SIZE` is a power of 2, a multiple of 1 KiB, and at least 8 KiB
 //! - `DEFAULT_MAX_SIZE > CHUNK_SIZE` and is a power of 2 multiple of `CHUNK_SIZE`
 //! - `PRACTICAL_MAX_SIZE > DEFAULT_MAX_SIZE` and is a power of 2 multiple of `CHUNK_SIZE`
 //!
@@ -67,6 +67,9 @@ mod tests {
     fn test_invariant() {
         // CHUNK_SIZE is a multiple of 1 KiB
         assert_eq!(CHUNK_SIZE % 1024, 0);
+
+        // CHUNK_SIZE is at least 8 KiB for optimal I/O performance
+        assert!(CHUNK_SIZE >= 8 * 1024);
 
         // CHUNK_SIZE is a power of two.
         assert_eq!(CHUNK_SIZE & (CHUNK_SIZE - 1), 0);
