@@ -97,6 +97,7 @@ impl Buffer {
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
     )]
+    #[inline]
     pub fn compact(&mut self) {
         self.buf.copy_within(self.pos..self.len, 0);
         self.len -= self.pos;
@@ -163,6 +164,7 @@ impl Buffer {
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
     )]
+    #[inline]
     pub fn grow(&mut self) {
         // Round `self.cap()` up to ensure we advance to the next power of two multiple of
         // `CHUNK_SIZE` even when already at a power of two.
@@ -181,6 +183,7 @@ impl Buffer {
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
     )]
+    #[inline]
     pub fn shrink(&mut self) {
         // Round `self.len()` up to the next chunk boundary to ensure `self.cap()` >= `self.len()`
         let next = Self::cap_down(self.len + CHUNK_SIZE - 1);
@@ -268,6 +271,47 @@ impl Buffer {
         Ok(total_bytes_read)
     }
 
+    /// Returns a view of the unconsumed buffer data as a UTF-8 string.
+    ///
+    /// This method automatically skips any partial UTF-8 sequences at the start
+    /// (e.g., if `consume()` was called mid-character) and end of the buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer contains invalid UTF-8 sequences that are
+    /// not at the boundaries.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "The invariant makes it safe"
+    )]
+    pub fn as_str(&self) -> io::Result<&str> {
+        // Find first char start byte
+        let start = self.buf[self.pos..self.len]
+            .iter()
+            // Not a continuation byte
+            .position(|&b| b & 0b1100_0000 != 0b1000_0000)
+            .map_or(self.len, |i| i + self.pos);
+
+        let mut end = self.len;
+        while end > start {
+            match str::from_utf8(&self.buf[start..end]) {
+                Ok(s) => return Ok(s),
+                Err(e) => {
+                    if e.error_len().is_none() {
+                        // If we have an incomplete sequence at the end, then trim it
+                        end = start + e.valid_up_to();
+                    } else {
+                        // We have a invalid UTF-8 sequence in the middle
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                    }
+                }
+            }
+        }
+
+        Ok("")
+    }
+
     /// Fill buffer while a predicate is true and grow to fit
     pub fn fill_while<P: Fn(char) -> bool>(
         &mut self,
@@ -291,8 +335,9 @@ impl Default for Buffer {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "Unwrap is okay in tests")]
+#[expect(clippy::indexing_slicing, reason = "Indexing slicing is okay in tests")]
 mod tests {
-    use std::{io::Cursor, usize};
+    use std::io::Cursor;
 
     use crate::constants::CHUNK_SIZE;
 
@@ -555,6 +600,62 @@ mod tests {
         let data = buffer.buf().get(pos..pos + remainder).unwrap();
         let fin = string.as_bytes().get(..remainder).unwrap();
         assert_eq!(data, fin);
+    }
+
+    #[test]
+    fn test_as_str() {
+        // Valid UTF-8
+        let mut buffer = Buffer::new();
+        buffer.buf[0..13].copy_from_slice(b"Hello, World!");
+        buffer.len = 13;
+        assert_eq!(buffer.as_str().unwrap(), "Hello, World!");
+
+        // Valid UTF-8 with multi-byte characters
+        let mut buffer = Buffer::new();
+        let text = "Hello, 世界!";
+        buffer.buf[0..text.len()].copy_from_slice(text.as_bytes());
+        buffer.len = text.len();
+        assert_eq!(buffer.as_str().unwrap(), text);
+
+        // Partial UTF-8 at the start
+        let mut buffer = Buffer::new();
+        let text = "Hello, 世界!";
+        buffer.buf[0..text.len()].copy_from_slice(text.as_bytes());
+        buffer.len = text.len();
+        // Consume up to the middle of "世" (3-byte UTF-8 character)
+        buffer.pos = 8;
+        let result = buffer.as_str().unwrap();
+        assert_eq!(result, "界!");
+
+        // Partial UTF-8 at the end
+        let mut buffer = Buffer::new();
+        let text = "Hello, 世界";
+        let bytes = text.as_bytes();
+        let truncated = bytes.len() - 1;
+        buffer.buf[0..truncated].copy_from_slice(&bytes[0..truncated]);
+        buffer.len = truncated;
+        let result = buffer.as_str().unwrap();
+        assert_eq!(result, "Hello, 世");
+
+        // Invalid UTF-8 in the middle
+        let mut buffer = Buffer::new();
+        buffer.buf[0..5].copy_from_slice(b"Hello");
+        // Continuation byte without start
+        buffer.buf[5] = 0b1000_0000;
+        buffer.buf[6..12].copy_from_slice(b"World!");
+        buffer.len = 12;
+        assert!(buffer.as_str().is_err());
+
+        // Empty buffer
+        let buffer = Buffer::new();
+        assert_eq!(buffer.as_str().unwrap(), "");
+
+        // All consumed
+        let mut buffer = Buffer::new();
+        buffer.buf[0..5].copy_from_slice(b"Hello");
+        buffer.len = 5;
+        buffer.pos = 5;
+        assert_eq!(buffer.as_str().unwrap(), "");
     }
 
     #[test]
