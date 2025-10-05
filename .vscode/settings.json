@@ -43,7 +43,7 @@
   },
 
   // Words to add to workspace dictionary:
-  "cSpell.words": ["clippy", "viell"],
+  "cSpell.words": ["bitmask", "clippy", "viell"],
 
   // Words to ignore in spell-checking.
   "cSpell.ignoreWords": [

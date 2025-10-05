@@ -271,10 +271,46 @@ impl Buffer {
         Ok(total_bytes_read)
     }
 
+    /// Aligns the given pos to the next char boundary.
+    ///
+    /// Clamped according to the following constraints: self.pos <= pos <= self.len
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "The invariant makes it safe"
+    )]
+    #[inline]
+    pub fn align_pos_to_char(&self, pos: usize) -> usize {
+        // Get the start position clamped by: self.pos <= pos <= self.len
+        let pos = cmp::max(pos, self.pos).min(self.len);
+
+        // Find the position of first byte that is not a UTF-8 continuation byte
+        self.buf[pos..self.len]
+            .iter()
+            // If the top two bit's are 10 then it's a continuation byte, this bitmask checks that
+            .position(|&b| b & 0b1100_0000 != 0b1000_0000)
+            .map_or(self.len, |i| i + pos)
+    }
+
     /// Returns a view of the unconsumed buffer data as a UTF-8 string.
     ///
     /// This method automatically skips any partial UTF-8 sequences at the start
     /// (e.g., if `consume()` was called mid-character) and end of the buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer contains invalid UTF-8 sequences that are
+    /// not at the boundaries.
+    pub fn as_str(&self) -> io::Result<&str> {
+        self.as_str_from(None)
+    }
+
+    /// Returns a view of the unconsumed buffer data as a UTF-8 string.
+    ///
+    /// This method automatically skips any partial UTF-8 sequences at the start
+    /// (e.g., if `consume()` was called mid-character) and end of the buffer.
+    ///
+    /// Takes an optional offset from the start of the buffer to make the str from.
     ///
     /// # Errors
     ///
@@ -285,13 +321,8 @@ impl Buffer {
         clippy::indexing_slicing,
         reason = "The invariant makes it safe"
     )]
-    pub fn as_str(&self) -> io::Result<&str> {
-        // Find first char start byte
-        let start = self.buf[self.pos..self.len]
-            .iter()
-            // Not a continuation byte
-            .position(|&b| b & 0b1100_0000 != 0b1000_0000)
-            .map_or(self.len, |i| i + self.pos);
+    pub fn as_str_from(&self, pos: Option<usize>) -> io::Result<&str> {
+        let start = self.align_pos_to_char(pos.unwrap_or(self.pos));
 
         let mut end = self.len;
         while end > start {
@@ -313,17 +344,76 @@ impl Buffer {
     }
 
     /// Fill buffer while a predicate is true and grow to fit
+    ///
+    /// This will return the number of valid bytes that where read, not how many bytes where
+    /// actually read. That number is likely higher.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "The invariant makes it safe"
+    )]
     pub fn fill_while<P: Fn(char) -> bool>(
         &mut self,
         mut reader: impl Read,
         predicate: P,
     ) -> io::Result<usize> {
-        todo!();
+        // Get pos aligned to the next char, this is where we start checking the predicate against.
+        let mut check_pos = self.align_pos_to_char(self.pos);
+        // The number of valid bytes read.
+        let mut total_valid_read = 0;
+
+        loop {
+            // If the buffer is currently full then start by growing it
+            if self.len == self.cap {
+                self.grow();
+            }
+
+            let read = self.fill(&mut reader)?;
+
+            // EOF detection
+            if read == 0 {
+                break;
+            }
+
+            // Get the new part
+            let string = &self.as_str_from(Some(check_pos))?;
+
+            // Look for a non-matching char
+            if let Some((byte_index, _)) = string.char_indices().find(|(_, c)| !predicate(*c)) {
+                // Add the number of valid bytes until the predicate breaks to the total valid bytes
+                // read so far and return it.
+                return Ok(total_valid_read + byte_index);
+            }
+
+            // All read characters are valid
+            total_valid_read += read;
+            // pos + string.len() <= self.len since we may have skipped a partial char
+            check_pos += string.len();
+        }
+
+        Ok(total_valid_read)
     }
 
     /// Fill buffer until a delimiter is encountered and grow to fit
-    pub fn fill_until(&mut self, mut reader: impl Read, delimiter: char) -> io::Result<usize> {
-        todo!();
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "The invariant makes it safe"
+    )]
+    pub fn fill_until(&mut self, reader: impl Read, delimiter: char) -> io::Result<usize> {
+        let valid_count = self.fill_while(reader, |c| c != delimiter)?;
+
+        // Check if we stopped at the delimiter (not EOF)
+        // Align to the char boundary first
+        let check_start = self.align_pos_to_char(self.pos);
+        let string = &self.as_str_from(Some(check_start + valid_count))?;
+        if let Some(ch) = string.chars().next() {
+            if ch == delimiter {
+                // Include the delimiter
+                return Ok(valid_count + ch.len_utf8());
+            }
+        }
+
+        // Hit EOF before finding delimiter
+        Ok(valid_count)
     }
 }
 
