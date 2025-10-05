@@ -302,7 +302,7 @@ impl Buffer {
     /// Returns an error if the buffer contains invalid UTF-8 sequences that are
     /// not at the boundaries.
     pub fn as_str(&self) -> io::Result<&str> {
-        self.as_str_from(None)
+        self.as_str_from(self.pos)
     }
 
     /// Returns a view of the unconsumed buffer data as a UTF-8 string.
@@ -310,7 +310,7 @@ impl Buffer {
     /// This method automatically skips any partial UTF-8 sequences at the start
     /// (e.g., if `consume()` was called mid-character) and end of the buffer.
     ///
-    /// Takes an optional offset from the start of the buffer to make the str from.
+    /// Takes an offset from the start of the buffer to make the str from.
     ///
     /// # Errors
     ///
@@ -321,8 +321,8 @@ impl Buffer {
         clippy::indexing_slicing,
         reason = "The invariant makes it safe"
     )]
-    pub fn as_str_from(&self, pos: Option<usize>) -> io::Result<&str> {
-        let start = self.align_pos_to_char(pos.unwrap_or(self.pos));
+    pub fn as_str_from(&self, pos: usize) -> io::Result<&str> {
+        let start = self.align_pos_to_char(pos);
 
         let mut end = self.len;
         while end > start {
@@ -375,7 +375,7 @@ impl Buffer {
             }
 
             // Get the new part
-            let string = &self.as_str_from(Some(check_pos))?;
+            let string = &self.as_str_from(check_pos)?;
 
             // Look for a non-matching char
             if let Some((byte_index, _)) = string.char_indices().find(|(_, c)| !predicate(*c)) {
@@ -404,7 +404,7 @@ impl Buffer {
         // Check if we stopped at the delimiter (not EOF)
         // Align to the char boundary first
         let check_start = self.align_pos_to_char(self.pos);
-        let string = &self.as_str_from(Some(check_start + valid_count))?;
+        let string = &self.as_str_from(check_start + valid_count)?;
         if let Some(ch) = string.chars().next() {
             if ch == delimiter {
                 // Include the delimiter
@@ -536,85 +536,185 @@ mod tests {
     }
 
     #[test]
-    fn test_cap_rounding_down() {
+    fn test_cap_down_zero() {
         assert_eq!(Buffer::cap_down(0), CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_down_below_chunk() {
         assert_eq!(Buffer::cap_down(CHUNK_SIZE - 1), CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_down_at_chunk() {
         assert_eq!(Buffer::cap_down(CHUNK_SIZE), CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_down_above_chunk() {
         assert_eq!(Buffer::cap_down(CHUNK_SIZE + 1), CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_down_double_chunk() {
         assert_eq!(Buffer::cap_down(2 * CHUNK_SIZE + 1), 2 * CHUNK_SIZE);
         assert_eq!(Buffer::cap_down(2 * CHUNK_SIZE), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_down_large_multiples() {
         assert_eq!(Buffer::cap_down(8 * CHUNK_SIZE + 1), 8 * CHUNK_SIZE);
         assert_eq!(Buffer::cap_down(32 * CHUNK_SIZE + 1), 32 * CHUNK_SIZE);
         assert_eq!(Buffer::cap_down(128 * CHUNK_SIZE + 1), 128 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_down_max() {
         assert_eq!(Buffer::cap_down(usize::MAX), PRACTICAL_MAX_SIZE);
     }
 
     #[test]
-    fn test_cap_rounding_up() {
+    fn test_cap_up_zero() {
         assert_eq!(Buffer::cap_up(0), CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_up_below_chunk() {
         assert_eq!(Buffer::cap_up(CHUNK_SIZE - 1), CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_up_at_chunk() {
         assert_eq!(Buffer::cap_up(CHUNK_SIZE), CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_up_above_chunk() {
         assert_eq!(Buffer::cap_up(CHUNK_SIZE + 1), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_up_double_chunk() {
         assert_eq!(Buffer::cap_up(2 * CHUNK_SIZE - 1), 2 * CHUNK_SIZE);
         assert_eq!(Buffer::cap_up(2 * CHUNK_SIZE), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_up_large_multiples() {
         assert_eq!(Buffer::cap_up(8 * CHUNK_SIZE - 1), 8 * CHUNK_SIZE);
         assert_eq!(Buffer::cap_up(32 * CHUNK_SIZE - 1), 32 * CHUNK_SIZE);
         assert_eq!(Buffer::cap_up(128 * CHUNK_SIZE - 1), 128 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_cap_up_max() {
         assert_eq!(Buffer::cap_up(usize::MAX), PRACTICAL_MAX_SIZE);
     }
 
     #[test]
-    fn test_grow() {
+    fn test_grow_to_2x() {
         let mut buffer = Buffer::new();
-
         buffer.grow();
         assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_grow_to_4x() {
+        let mut buffer = Buffer::new();
+        buffer.grow();
         buffer.grow();
         assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_grow_to_8x() {
+        let mut buffer = Buffer::new();
+        buffer.grow();
+        buffer.grow();
         buffer.grow();
         assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_grow_to_16x() {
+        let mut buffer = Buffer::new();
+        buffer.grow();
+        buffer.grow();
+        buffer.grow();
         buffer.grow();
         assert_eq!(buffer.cap(), 16 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_grow_to_32x() {
+        let mut buffer = Buffer::new();
+        buffer.grow();
+        buffer.grow();
+        buffer.grow();
+        buffer.grow();
         buffer.grow();
         assert_eq!(buffer.cap(), 32 * CHUNK_SIZE);
     }
 
     #[test]
-    fn test_shrink() {
+    fn test_shrink_from_32x_to_16x() {
         let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
-
-        buffer.len = 15 * CHUNK_SIZE + 1; // simulate unconsumed content
+        buffer.len = 15 * CHUNK_SIZE + 1;
         buffer.shrink();
         assert_eq!(buffer.cap(), 16 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_shrink_from_32x_to_8x() {
+        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
         buffer.len = 7 * CHUNK_SIZE + 1;
         buffer.shrink();
         assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_shrink_from_32x_to_6x() {
+        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
         buffer.len = 6 * CHUNK_SIZE - 1;
         buffer.shrink();
         assert_eq!(buffer.cap(), 6 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_shrink_from_32x_to_4x() {
+        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
         buffer.len = 3 * CHUNK_SIZE + 1;
         buffer.shrink();
         assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_shrink_from_32x_to_3x() {
+        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
         buffer.len = 2 * CHUNK_SIZE + 1;
         buffer.shrink();
         assert_eq!(buffer.cap(), 3 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_shrink_from_32x_to_2x() {
+        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
         buffer.len = 2 * CHUNK_SIZE;
         buffer.shrink();
         assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_shrink_from_32x_to_1x() {
+        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
         buffer.len = CHUNK_SIZE;
         buffer.shrink();
         assert_eq!(buffer.cap(), CHUNK_SIZE);
+    }
 
+    #[test]
+    fn test_shrink_from_32x_when_empty() {
+        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
         buffer.len = 0;
         buffer.shrink();
         assert_eq!(buffer.cap(), CHUNK_SIZE);
@@ -693,41 +793,48 @@ mod tests {
     }
 
     #[test]
-    fn test_as_str() {
-        // Valid UTF-8
+    fn test_as_str_valid_ascii() {
         let mut buffer = Buffer::new();
-        buffer.buf[0..13].copy_from_slice(b"Hello, World!");
-        buffer.len = 13;
-        assert_eq!(buffer.as_str().unwrap(), "Hello, World!");
-
-        // Valid UTF-8 with multi-byte characters
-        let mut buffer = Buffer::new();
-        let text = "Hello, 世界!";
-        buffer.buf[0..text.len()].copy_from_slice(text.as_bytes());
-        buffer.len = text.len();
+        let text = "Hello, World!";
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
         assert_eq!(buffer.as_str().unwrap(), text);
+    }
 
-        // Partial UTF-8 at the start
+    #[test]
+    fn test_as_str_valid_multibyte() {
         let mut buffer = Buffer::new();
         let text = "Hello, 世界!";
-        buffer.buf[0..text.len()].copy_from_slice(text.as_bytes());
-        buffer.len = text.len();
-        // Consume up to the middle of "世" (3-byte UTF-8 character)
-        buffer.pos = 8;
-        let result = buffer.as_str().unwrap();
-        assert_eq!(result, "界!");
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
+        assert_eq!(buffer.as_str().unwrap(), text);
+    }
 
-        // Partial UTF-8 at the end
+    #[test]
+    fn test_as_str_partial_utf8_at_start() {
+        let mut buffer = Buffer::new();
+        let text = "Hello, 世界!";
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
+        // Use as_str_from with offset in the middle of "世" (3-byte UTF-8 character)
+        let result = buffer.as_str_from(8).unwrap();
+        assert_eq!(result, "界!");
+    }
+
+    #[test]
+    fn test_as_str_partial_utf8_at_end() {
         let mut buffer = Buffer::new();
         let text = "Hello, 世界";
         let bytes = text.as_bytes();
         let truncated = bytes.len() - 1;
-        buffer.buf[0..truncated].copy_from_slice(&bytes[0..truncated]);
-        buffer.len = truncated;
+        let cur = Cursor::new(&bytes[0..truncated]);
+        buffer.fill(cur).unwrap();
         let result = buffer.as_str().unwrap();
         assert_eq!(result, "Hello, 世");
+    }
 
-        // Invalid UTF-8 in the middle
+    #[test]
+    fn test_as_str_invalid_utf8_middle() {
         let mut buffer = Buffer::new();
         buffer.buf[0..5].copy_from_slice(b"Hello");
         // Continuation byte without start
@@ -735,17 +842,23 @@ mod tests {
         buffer.buf[6..12].copy_from_slice(b"World!");
         buffer.len = 12;
         assert!(buffer.as_str().is_err());
+    }
 
-        // Empty buffer
+    #[test]
+    fn test_as_str_empty() {
         let buffer = Buffer::new();
         assert_eq!(buffer.as_str().unwrap(), "");
+    }
 
-        // All consumed
+    #[test]
+    fn test_as_str_all_consumed() {
         let mut buffer = Buffer::new();
-        buffer.buf[0..5].copy_from_slice(b"Hello");
-        buffer.len = 5;
-        buffer.pos = 5;
-        assert_eq!(buffer.as_str().unwrap(), "");
+        let text = "Hello";
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
+        // Use as_str_from with offset at the end
+        let result = buffer.as_str_from(5).unwrap();
+        assert_eq!(result, "");
     }
 
     #[test]
@@ -946,6 +1059,24 @@ mod tests {
         // CHUNK_SIZE 'a's + '世' (3 bytes)
         assert_eq!(read, CHUNK_SIZE + 3);
         assert_eq!(buffer.len(), CHUNK_SIZE + 3);
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_fill_until_multibyte_delimiter_breaks_at_chunk_boundary() {
+        let mut buffer = Buffer::new();
+
+        // Create text where a multibyte delimiter is split at CHUNK_SIZE
+        // The first byte of '世' will be at CHUNK_SIZE - 1, causing it to be split across reads
+        let prefix = "a".repeat(CHUNK_SIZE - 1);
+        let text = format!("{prefix}世");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_until(cur, '世').unwrap();
+
+        // CHUNK_SIZE - 1 'a's + '世' (3 bytes)
+        assert_eq!(read, CHUNK_SIZE - 1 + 3);
+        assert_eq!(buffer.len(), CHUNK_SIZE + 2); // CHUNK_SIZE - 1 + 3 bytes for '世'
         assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
     }
 }
