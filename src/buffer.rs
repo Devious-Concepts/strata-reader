@@ -384,8 +384,8 @@ impl Buffer {
                 return Ok(total_valid_read + byte_index);
             }
 
-            // All read characters are valid
-            total_valid_read += read;
+            // All read characters are valid, some boundary bytes may slip into the next iteration
+            total_valid_read += string.len();
             // pos + string.len() <= self.len since we may have skipped a partial char
             check_pos += string.len();
         }
@@ -749,16 +749,203 @@ mod tests {
     }
 
     #[test]
-    fn test_fill_while() {
+    fn test_fill_while_basic() {
         let mut buffer = Buffer::new();
+        let text = "aaaaaHello";
+        let cur = Cursor::new(text);
 
-        // TODO
+        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
+
+        assert_eq!(read, 5);
+        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.cap(), CHUNK_SIZE);
+        assert_eq!(buffer.as_str().unwrap(), text);
     }
 
     #[test]
-    fn test_fill_until() {
+    fn test_fill_while_all_match() {
+        let mut buffer = Buffer::new();
+        let text = "aaaaaaaaa";
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
+
+        assert_eq!(read, text.len());
+        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.cap(), CHUNK_SIZE);
+        assert_eq!(buffer.as_str().unwrap(), text);
+    }
+
+    #[test]
+    fn test_fill_while_multibyte_chars() {
+        let mut buffer = Buffer::new();
+        let text = "世界世界ABC";
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_while(cur, |c| c == '世' || c == '界').unwrap();
+
+        // Should read 4 chars * 3 bytes each = 12 bytes
+        assert_eq!(read, 12);
+        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.cap(), CHUNK_SIZE);
+        assert_eq!(buffer.as_str().unwrap(), text);
+    }
+
+    #[test]
+    fn test_fill_while_chunk_boundary() {
         let mut buffer = Buffer::new();
 
-        // TODO
+        // Create text that breaks exactly at CHUNK_SIZE
+        let prefix = "a".repeat(CHUNK_SIZE);
+        let text = format!("{prefix}b");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
+
+        assert_eq!(read, CHUNK_SIZE);
+        assert_eq!(buffer.len(), CHUNK_SIZE + 1);
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_fill_while_chunk_boundary_plus_one() {
+        let mut buffer = Buffer::new();
+
+        // Create text that breaks at CHUNK_SIZE + 1
+        let prefix = "a".repeat(CHUNK_SIZE + 1);
+        let text = format!("{prefix}b");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
+
+        assert_eq!(read, CHUNK_SIZE + 1);
+        assert_eq!(buffer.len(), CHUNK_SIZE + 2);
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_fill_while_multibyte_char_at_chunk_boundary() {
+        let mut buffer = Buffer::new();
+
+        // Create text where a multibyte char starts right at CHUNK_SIZE
+        let prefix = "a".repeat(CHUNK_SIZE);
+        let text = format!("{prefix}世b");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_while(cur, |c| c == 'a' || c == '世').unwrap();
+
+        // Should read CHUNK_SIZE 'a's + 1 '世' (3 bytes)
+        assert_eq!(read, CHUNK_SIZE + 3);
+        assert_eq!(buffer.len(), CHUNK_SIZE + 4); // + 'b'
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_fill_while_multibyte_char_breaks_at_chunk_boundary() {
+        let mut buffer = Buffer::new();
+
+        // Create text where a multibyte char that breaks the predicate is split at CHUNK_SIZE
+        // The first byte of '世' will be at CHUNK_SIZE - 1, causing it to be split across reads
+        let prefix = "a".repeat(CHUNK_SIZE - 1);
+        let text = format!("{prefix}世");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
+
+        assert_eq!(read, CHUNK_SIZE - 1);
+        assert_eq!(buffer.len(), CHUNK_SIZE + 2); // CHUNK_SIZE - 1 + 3 bytes for '世'
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_fill_until_basic() {
+        let mut buffer = Buffer::new();
+        let text = "Hello\nWorld";
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_until(cur, '\n').unwrap();
+
+        assert_eq!(read, 6); // "Hello\n"
+        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.cap(), CHUNK_SIZE);
+        assert_eq!(buffer.as_str().unwrap(), text);
+    }
+
+    #[test]
+    fn test_fill_until_not_found() {
+        let mut buffer = Buffer::new();
+        let text = "Hello World";
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_until(cur, '\n').unwrap();
+
+        assert_eq!(read, text.len());
+        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.cap(), CHUNK_SIZE);
+        assert_eq!(buffer.as_str().unwrap(), text);
+    }
+
+    #[test]
+    fn test_fill_until_multibyte_delimiter() {
+        let mut buffer = Buffer::new();
+        let text = "Hello世World";
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_until(cur, '世').unwrap();
+
+        // "Hello" (5 bytes) + "世" (3 bytes)
+        assert_eq!(read, 8);
+        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.cap(), CHUNK_SIZE);
+        assert_eq!(buffer.as_str().unwrap(), text);
+    }
+
+    #[test]
+    fn test_fill_until_chunk_boundary() {
+        let mut buffer = Buffer::new();
+
+        // Create text where delimiter is exactly at CHUNK_SIZE
+        let prefix = "a".repeat(CHUNK_SIZE);
+        let text = format!("{prefix}\n");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_until(cur, '\n').unwrap();
+
+        assert_eq!(read, CHUNK_SIZE + 1); // includes the newline
+        assert_eq!(buffer.len(), CHUNK_SIZE + 1);
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_fill_until_chunk_boundary_plus_one() {
+        let mut buffer = Buffer::new();
+
+        // Create text where delimiter is at CHUNK_SIZE + 1
+        let prefix = "a".repeat(CHUNK_SIZE + 1);
+        let text = format!("{prefix}\n");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_until(cur, '\n').unwrap();
+
+        assert_eq!(read, CHUNK_SIZE + 2); // includes the newline
+        assert_eq!(buffer.len(), CHUNK_SIZE + 2);
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_fill_until_multibyte_delimiter_at_chunk_boundary() {
+        let mut buffer = Buffer::new();
+
+        // Create text where multibyte delimiter starts at CHUNK_SIZE
+        let prefix = "a".repeat(CHUNK_SIZE);
+        let text = format!("{prefix}世");
+        let cur = Cursor::new(text);
+
+        let read = buffer.fill_until(cur, '世').unwrap();
+
+        // CHUNK_SIZE 'a's + '世' (3 bytes)
+        assert_eq!(read, CHUNK_SIZE + 3);
+        assert_eq!(buffer.len(), CHUNK_SIZE + 3);
+        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
     }
 }
