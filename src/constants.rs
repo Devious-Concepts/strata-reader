@@ -27,7 +27,8 @@
 /// library authors' knowledge of optimal I/O performance.
 ///
 /// The buffer capacity will always be a multiple of this value and it's therefore also the minimum
-/// possible size (1 * `CHUNK_SIZE`)
+/// possible size (1 * `CHUNK_SIZE`). Additionally `CHUNK_SIZE / 2` (half a chunk) will always align
+/// with a common minimum page size (4 KiB).
 pub const CHUNK_SIZE: usize =
     // 2^13 = 8192 = 8 * 1024 = 8 KiB
     1 << 13;
