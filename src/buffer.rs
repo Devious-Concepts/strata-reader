@@ -1,3 +1,31 @@
+//! High-performance buffer with dynamic capacity management.
+//!
+//! The [`Buffer`] type provides standalone buffered I/O operations with automatic growth
+//! and shrinking. It is also used as the internal buffer for [`Reader`](crate::Reader).
+//!
+//! # Example
+//!
+//! ```
+//! use strata_reader::buffer::Buffer;
+//! use std::io::Cursor;
+//!
+//! let mut buffer = Buffer::new();
+//! let mut reader = Cursor::new("aaaa:bbbb");
+//!
+//! // Read until delimiter
+//! let count = buffer.fill_until(&mut reader, ':').unwrap();
+//! assert_eq!(count, 5); // "aaaa:" (includes delimiter)
+//!
+//! // Access the data
+//! assert_eq!(buffer.as_str().unwrap(), "aaaa:bbbb");
+//!
+//! // Consume what we processed
+//! buffer.consume(count);
+//!
+//! // Process remaining data
+//! assert_eq!(buffer.as_str().unwrap(), "bbbb");
+//! ```
+
 use std::cmp;
 use std::io::{self, Read};
 
@@ -5,24 +33,57 @@ use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
 
 /// A dynamically sized buffer with chunked capacity management.
 ///
+/// `Buffer` provides high-performance buffered I/O operations with automatic capacity adjustment.
+/// It grows and shrinks its capacity based on usage patterns, making it ideal for scenarios with
+/// varying data sizes. This type is also used as the internal buffer for
+/// [`Reader`](crate::Reader).
+///
+/// # Capacity Management
+///
+/// The buffer uses a chunk-based growth and shrinking strategy:
+/// - **Growth**: Expands in exponential steps (powers of 2) aligned to [`CHUNK_SIZE`] boundaries,
+///   allowing efficient memory allocation for large reads.
+/// - **Shrinking**: Contracts linearly to `CHUNK_SIZE` multiples, freeing unused memory while
+///   maintaining alignment with typical page sizes for optimal I/O performance.
+/// - **Alignment**: All capacities are multiples of `CHUNK_SIZE`, which is tuned for common
+///   system page sizes.
+///
+/// # Use Cases
+///
+/// - Tokenization and parsing (e.g., JSON decoding with [`fill_while`](Self::fill_while) and
+///   [`fill_until`](Self::fill_until))
+/// - Large file processing with dynamic memory needs
+/// - Stream buffering with arbitrary peek-ahead requirements
+/// - Any scenario requiring efficient buffered reads with automatic capacity adjustment
+///
 /// # Invariants
 ///
-/// This buffer maintains the invariant `0 <= pos <= len <= buf.len() <= cap <= buf.capacity()` at
-/// all times.
+/// This buffer maintains the invariant `0 <= self.pos <= self.len <= self.buf.len() <= self.cap <=
+/// self.buf.capacity()` at all times, ensuring memory safety and correctness of all operations.
 #[derive(Debug)]
 pub struct Buffer {
-    /// Internal buffer.
+    /// Internal buffer storage.
     buf: Vec<u8>,
-    /// Capacity of the buffer, as set, not in practice. It may be slightly larger in reality.
+    /// Logical capacity of the buffer (may be slightly less than `buf.capacity()`).
     cap: usize,
-    /// Length of the data in the buffer that we care about.
+    /// Number of bytes currently stored in the buffer.
     len: usize,
-    /// Position that data has been consumed up to.
+    /// Number of bytes that have been consumed (read position).
     pos: usize,
 }
 
 impl Buffer {
-    /// Create a new buffer
+    /// Creates a new buffer with default capacity.
+    ///
+    /// The buffer is initialized with a capacity of [`CHUNK_SIZE`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// let buffer = Buffer::new();
+    /// assert_eq!(buffer.len(), 0);
+    /// ```
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -33,7 +94,20 @@ impl Buffer {
         }
     }
 
-    /// Create a new buffer with at least the given capacity
+    /// Creates a new buffer with at least the specified capacity.
+    ///
+    /// The actual capacity will be rounded up to the nearest power-of-2 multiple of
+    /// [`CHUNK_SIZE`] that can accommodate the requested capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// let buffer = Buffer::with_capacity(100);
+    /// assert!(buffer.cap() >= 100);
+    /// assert_eq!(buffer.cap() % CHUNK_SIZE, 0); // Aligned to CHUNK_SIZE
+    /// ```
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         // Round up to fit the requested capacity
@@ -47,7 +121,24 @@ impl Buffer {
         }
     }
 
-    /// Return a reference slice to the buffer
+    /// Returns a reference to the entire buffer contents up to capacity.
+    ///
+    /// This returns a slice of the internal buffer from index 0 to [`cap()`](Self::cap),
+    /// which includes both consumed and unconsumed data. Use with [`pos()`](Self::pos) and
+    /// [`len()`](Self::len) to access specific regions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new(b"Hello, World!");
+    /// buffer.fill(&mut reader).unwrap();
+    ///
+    /// let slice = buffer.buf();
+    /// // Access unconsumed data: &slice[buffer.pos()..buffer.len()]
+    /// ```
     #[expect(clippy::indexing_slicing, reason = "The invariant makes it safe")]
     #[inline]
     pub fn buf(&self) -> &[u8] {
@@ -55,25 +146,56 @@ impl Buffer {
         &self.buf[..self.cap]
     }
 
-    /// The capacity of the buffer
+    /// Returns the current capacity of the buffer in bytes.
+    ///
+    /// This is always a multiple of [`CHUNK_SIZE`] and represents the maximum number of bytes
+    /// the buffer can hold before needing to grow.
     #[inline]
     pub fn cap(&self) -> usize {
         self.cap
     }
 
-    /// The length of the data in the buffer
+    /// Returns the number of bytes currently in the buffer.
+    ///
+    /// This includes both consumed and unconsumed data. The unconsumed portion is
+    /// `len() - pos()` bytes.
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// The amount of data that has been consumed
+    /// Returns `true` if the buffer contains no data.
+    ///
+    /// Equivalent to `self.len() == 0`.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the current read position (number of consumed bytes).
+    ///
+    /// Data from index 0 to `pos()` has been consumed. Unconsumed data starts at `pos()`.
     #[inline]
     pub fn pos(&self) -> usize {
         self.pos
     }
 
-    /// Discard the current buffer.
+    /// Discards all data in the buffer and shrinks capacity.
+    ///
+    /// Resets both the read position and length to zero, then shrinks the buffer to
+    /// [`CHUNK_SIZE`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new(b"data")).unwrap();
+    /// buffer.discard();
+    /// assert_eq!(buffer.len(), 0);
+    /// assert_eq!(buffer.pos(), 0);
+    /// ```
     #[inline]
     pub fn discard(&mut self) {
         self.pos = 0;
@@ -82,7 +204,21 @@ impl Buffer {
         self.shrink();
     }
 
-    /// Mark an amount of bytes as consumed
+    /// Marks `amt` bytes as consumed, advancing the read position.
+    ///
+    /// If `amt` exceeds the available unconsumed data, the position is clamped to
+    /// [`len()`](Self::len).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new(b"Hello")).unwrap();
+    /// buffer.consume(2);
+    /// assert_eq!(buffer.pos(), 2);
+    /// ```
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
@@ -92,7 +228,24 @@ impl Buffer {
         self.pos = cmp::min(self.pos + amt, self.len);
     }
 
-    /// Remove bytes that have been consumed
+    /// Removes consumed bytes from the buffer and shrinks capacity.
+    ///
+    /// Moves unconsumed data to the beginning of the buffer using `copy_within`, resets the
+    /// read position to 0, and shrinks the capacity to fit the remaining data. This operation
+    /// is useful after consuming a significant amount of data to reclaim space.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new(b"Hello, World!")).unwrap();
+    /// buffer.consume(7);  // Consume "Hello, "
+    /// buffer.compact();   // Move "World!" to start
+    /// assert_eq!(buffer.pos(), 0);
+    /// assert_eq!(buffer.len(), 6);  // "World!"
+    /// ```
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
@@ -106,16 +259,16 @@ impl Buffer {
         self.shrink();
     }
 
-    /// Round down linearly
+    /// Rounds capacity down to the nearest [`CHUNK_SIZE`] multiple.
     ///
-    /// # Safety
-    ///
-    /// The bounds checks prevent both underflow and overflow problems by setting the minimum at
-    /// [`CHUNK_SIZE`] and maximum at [`PRACTICAL_MAX_SIZE`]. The smallest value the calculation can
-    /// reach is `CHUNK_SIZE` when `capacity` is less than `2 * CHUNK_SIZE`.
+    /// Used internally for shrinking operations to maintain linear shrinking behavior.
     #[inline]
     #[expect(clippy::arithmetic_side_effects, reason = "Bounds checks make it safe")]
     fn cap_down(capacity: usize) -> usize {
+        // The bounds checks prevent both underflow and overflow problems by setting the minimum at
+        // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`]. The smallest value the calculation
+        // can reach is `CHUNK_SIZE` when `capacity` is less than `2 * CHUNK_SIZE`.
+
         // Min bounds check
         if capacity <= CHUNK_SIZE {
             return CHUNK_SIZE;
@@ -130,18 +283,18 @@ impl Buffer {
         (capacity / CHUNK_SIZE) * CHUNK_SIZE
     }
 
-    /// Round up in exponential steps
+    /// Rounds capacity up to the nearest power-of-2 multiple of [`CHUNK_SIZE`].
     ///
-    /// # Safety
-    ///
-    /// The bounds checks prevent both underflow and overflow problems by setting the minium at
-    /// [`CHUNK_SIZE`] and maximum at [`PRACTICAL_MAX_SIZE`]. The max value that the power of two
-    /// calculation can reach is `PRACTICAL_MAX_SIZE >> 1` when `capacity` is greater than
-    /// `PRACTICAL_MAX_SIZE >> 2`.
+    /// Used internally for growth operations to maintain exponential growth behavior.
     #[inline]
     #[expect(clippy::arithmetic_side_effects, reason = "Bounds checks make it safe")]
     fn cap_up(capacity: usize) -> usize {
-        // Max bounds checks
+        // The bounds checks prevent both underflow and overflow problems by setting the minimum at
+        // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`]. The max value that the power of two
+        // calculation can reach is `PRACTICAL_MAX_SIZE / 2` when `capacity` is greater than
+        // `PRACTICAL_MAX_SIZE / 4`.
+
+        // Max bounds check
         if capacity >= PRACTICAL_MAX_SIZE >> 1 {
             return PRACTICAL_MAX_SIZE;
         }
@@ -155,17 +308,29 @@ impl Buffer {
         ((capacity + CHUNK_SIZE - 1) / CHUNK_SIZE).next_power_of_two() * CHUNK_SIZE
     }
 
-    /// Grows the capacity to the next power of 2 multiple of [`CHUNK_SIZE`].
+    /// Grows the buffer capacity to the next power-of-2 multiple of [`CHUNK_SIZE`].
     ///
-    /// # Safety
+    /// The capacity grows exponentially (e.g., `CHUNK_SIZE` → `2 * CHUNK_SIZE` → `4 * CHUNK_SIZE`)
+    /// up to [`PRACTICAL_MAX_SIZE`].
     ///
-    /// The capacity maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// let mut buffer = Buffer::new();
+    /// let initial_cap = buffer.cap();
+    /// buffer.grow();
+    /// assert_eq!(buffer.cap(), 2 * initial_cap);
+    /// ```
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
     )]
     #[inline]
     pub fn grow(&mut self) {
+        // The capacity maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
+
         // Round `self.cap()` up to ensure we advance to the next power of two multiple of
         // `CHUNK_SIZE` even when already at a power of two.
         let next = Self::cap_up(self.cap + CHUNK_SIZE - 1);
@@ -174,17 +339,31 @@ impl Buffer {
         self.cap = next;
     }
 
-    /// Shrink the capacity to the smallest multiple of [`CHUNK_SIZE`] that fits `self.len()`.
+    /// Shrinks the buffer capacity to the smallest [`CHUNK_SIZE`] multiple that fits the current data.
     ///
-    /// # Safety
+    /// The capacity shrinks linearly to reduce memory usage while maintaining alignment with
+    /// `CHUNK_SIZE` boundaries. Minimum capacity is always `CHUNK_SIZE`.
     ///
-    /// The length maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
+    /// This method is called automatically by [`compact()`](Self::compact) and
+    /// [`discard()`](Self::discard).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
+    /// buffer.shrink();
+    /// assert_eq!(buffer.cap(), CHUNK_SIZE);  // Shrinks to minimum when empty
+    /// ```
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
     )]
     #[inline]
     pub fn shrink(&mut self) {
+        // The length maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
+
         // Round `self.len()` up to the next chunk boundary to ensure `self.cap()` >= `self.len()`
         let next = Self::cap_down(self.len + CHUNK_SIZE - 1);
 
@@ -192,7 +371,27 @@ impl Buffer {
         self.cap = next;
     }
 
-    /// Fill available space in the buffer and return the number of bytes read.
+    /// Fills the available space in the buffer from a reader.
+    ///
+    /// Reads data to fill the buffer up to its current capacity. Does not grow the buffer.
+    /// Returns the number of bytes read, which may be 0 if the buffer is already full or if
+    /// the reader reaches EOF.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new(b"Hello, World!");
+    /// let bytes_read = buffer.fill(&mut reader).unwrap();
+    /// assert_eq!(bytes_read, 13);
+    /// assert_eq!(buffer.len(), 13);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading from the reader.
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
@@ -204,7 +403,7 @@ impl Buffer {
         // Check if there is space available to fill
         if self.len < self.cap {
             // Read to fill the remaining space.
-            bytes_read = reader.read(&mut self.buf[self.len..self.cap])?;
+            bytes_read += reader.read(&mut self.buf[self.len..self.cap])?;
 
             // Increase the length by the number of bytes read.
             self.len += bytes_read;
@@ -213,7 +412,30 @@ impl Buffer {
         Ok(bytes_read)
     }
 
-    /// Fill buffer and grow to fit the requested amount
+    /// Fills the buffer with at least `amt` bytes from a reader, growing as needed.
+    ///
+    /// Automatically grows the buffer capacity to accommodate the requested amount of data.
+    /// Stops reading when at least `amt` bytes have been read, EOF is reached, or the maximum
+    /// capacity ([`PRACTICAL_MAX_SIZE`]) is reached.
+    ///
+    /// After reading, the buffer is shrunk to fit the actual data read.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let data = vec![0u8; 3 * CHUNK_SIZE];
+    /// let mut reader = Cursor::new(data);
+    /// let bytes_read = buffer.fill_amount(&mut reader, 3 * CHUNK_SIZE).unwrap();
+    /// assert_eq!(bytes_read, 3 * CHUNK_SIZE);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading from the reader.
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
@@ -234,7 +456,7 @@ impl Buffer {
                 // We've hit a point where growing would be more optimal than just filling the
                 // available space and the available space is too small.
                 if self.cap < PRACTICAL_MAX_SIZE {
-                    // There is no more space available, grow to the next size.
+                    // Available space is insufficient, grow to the next size.
                     self.grow();
                 } else {
                     // Can't grow anymore.
@@ -265,15 +487,31 @@ impl Buffer {
             }
         }
 
-        // Shrink in case we where overeager with our growth.
+        // Shrink in case we were overeager with our growth.
         self.shrink();
 
         Ok(total_bytes_read)
     }
 
-    /// Aligns the given pos to the next char boundary.
+    /// Aligns a position to the next valid UTF-8 character boundary.
     ///
-    /// Clamped according to the following constraints: self.pos <= pos <= self.len
+    /// If `pos` falls in the middle of a UTF-8 multi-byte character, this advances to the start
+    /// of the next character. The result is clamped to the range `self.pos()..=self.len()`.
+    ///
+    /// This is useful when working with UTF-8 text to ensure operations don't split characters.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new("Hello, 世界")).unwrap();
+    /// // "Hello, " = 7 bytes, '世' starts at byte 7 (3 bytes), '界' starts at byte 10
+    /// // Position 8 is in the middle of the '世' character
+    /// let aligned = buffer.align_pos_to_char(8);
+    /// assert_eq!(aligned, 10); // Aligned to start of '界'
+    /// ```
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
@@ -287,35 +525,60 @@ impl Buffer {
         // Find the position of first byte that is not a UTF-8 continuation byte
         self.buf[pos..self.len]
             .iter()
-            // If the top two bit's are 10 then it's a continuation byte, this bitmask checks that
+            // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
             .position(|&b| b & 0b1100_0000 != 0b1000_0000)
             .map_or(self.len, |i| i + pos)
     }
 
-    /// Returns a view of the unconsumed buffer data as a UTF-8 string.
+    /// Returns the unconsumed buffer data as a UTF-8 string slice.
     ///
-    /// This method automatically skips any partial UTF-8 sequences at the start
-    /// (e.g., if `consume()` was called mid-character) and end of the buffer.
+    /// Automatically handles partial UTF-8 sequences by:
+    /// - Skipping incomplete sequences at the start (e.g., if [`consume()`](Self::consume) was
+    ///   called mid-character)
+    /// - Trimming incomplete sequences at the end
+    ///
+    /// This is a convenience method for working with text data without manual UTF-8 handling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new("Hello, 世界!")).unwrap();
+    /// let text = buffer.as_str().unwrap();
+    /// assert_eq!(text, "Hello, 世界!");
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns an error if the buffer contains invalid UTF-8 sequences that are
-    /// not at the boundaries.
+    /// Returns an [`io::Error`] with kind [`InvalidData`](io::ErrorKind::InvalidData) if the
+    /// buffer contains invalid UTF-8 sequences (not at boundaries).
     pub fn as_str(&self) -> io::Result<&str> {
         self.as_str_from(self.pos)
     }
 
-    /// Returns a view of the unconsumed buffer data as a UTF-8 string.
+    /// Returns buffer data as a UTF-8 string slice starting from a specific position.
     ///
-    /// This method automatically skips any partial UTF-8 sequences at the start
-    /// (e.g., if `consume()` was called mid-character) and end of the buffer.
+    /// Like [`as_str()`](Self::as_str), but starts from a position in the buffer clamped to the
+    /// range `self.pos()..=self.len()`. Automatically handles partial UTF-8 sequences at
+    /// both boundaries.
     ///
-    /// Takes an offset from the start of the buffer to make the str from.
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new("Hello, World!")).unwrap();
+    /// let text = buffer.as_str_from(7).unwrap();
+    /// assert_eq!(text, "World!");
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns an error if the buffer contains invalid UTF-8 sequences that are
-    /// not at the boundaries.
+    /// Returns an [`io::Error`] with kind [`InvalidData`](io::ErrorKind::InvalidData) if the
+    /// buffer contains invalid UTF-8 sequences (not at boundaries).
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
@@ -333,7 +596,7 @@ impl Buffer {
                         // If we have an incomplete sequence at the end, then trim it
                         end = start + e.valid_up_to();
                     } else {
-                        // We have a invalid UTF-8 sequence in the middle
+                        // We have an invalid UTF-8 sequence in the middle
                         return Err(io::Error::new(io::ErrorKind::InvalidData, e));
                     }
                 }
@@ -343,10 +606,35 @@ impl Buffer {
         Ok("")
     }
 
-    /// Fill buffer while a predicate is true and grow to fit
+    /// Fills the buffer while a predicate matches characters, growing as needed.
     ///
-    /// This will return the number of valid bytes that where read, not how many bytes where
-    /// actually read. That number is likely higher.
+    /// Reads from the reader and decodes UTF-8 characters, continuing as long as the predicate
+    /// returns `true`. Stops when a character fails the predicate, EOF is reached, or the
+    /// maximum capacity ([`PRACTICAL_MAX_SIZE`]) is reached.
+    ///
+    /// The buffer automatically grows to accommodate matching data.
+    ///
+    /// # Return Value
+    ///
+    /// Returns the number of **valid UTF-8 bytes** that matched the predicate. Note that the
+    /// buffer may contain significantly more data than this count, since reads occur in chunks
+    /// and may include data beyond where the predicate first fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new("aaaaaHello");
+    /// let count = buffer.fill_while(&mut reader, |c| c == 'a').unwrap();
+    /// assert_eq!(count, 5);  // Five 'a' characters matched
+    /// assert_eq!(buffer.len(), 10);  // But entire string was read
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading, or UTF-8 validation errors.
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
@@ -356,9 +644,9 @@ impl Buffer {
         mut reader: impl Read,
         predicate: P,
     ) -> io::Result<usize> {
-        // Get pos aligned to the next char, this is where we start checking the predicate against.
+        // Get pos aligned to the next char, this is where we start checking against the predicate
         let mut check_pos = self.align_pos_to_char(self.pos);
-        // The number of valid bytes read.
+        // The number of valid bytes read
         let mut total_valid_read = 0;
 
         loop {
@@ -384,16 +672,46 @@ impl Buffer {
                 return Ok(total_valid_read + byte_index);
             }
 
-            // All read characters are valid, some boundary bytes may slip into the next iteration
+            // All read characters are valid
+            // Some boundary bytes may slip into the next iteration and be counted there
             total_valid_read += string.len();
-            // pos + string.len() <= self.len since we may have skipped a partial char
+            // Likewise, update the check position to the last valid full char
+            // This way any partial chars at the end of the buffer are parsed in the next iteration
             check_pos += string.len();
         }
 
         Ok(total_valid_read)
     }
 
-    /// Fill buffer until a delimiter is encountered and grow to fit
+    /// Fills the buffer until a delimiter character is found, growing as needed.
+    ///
+    /// Reads from the reader until the specified delimiter character is encountered. Stops when
+    /// the delimiter is found, EOF is reached, or the maximum capacity ([`PRACTICAL_MAX_SIZE`])
+    /// is reached.
+    ///
+    /// The buffer automatically grows to accommodate the data.
+    ///
+    /// # Return Value
+    ///
+    /// Returns the number of **valid UTF-8 bytes** **including the delimiter** if found. Note
+    /// that the buffer may contain significantly more data than this count, since reads occur in
+    /// chunks and may include data beyond the delimiter.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new("Hello\nWorld");
+    /// let count = buffer.fill_until(&mut reader, '\n').unwrap();
+    /// assert_eq!(count, 6);  // "Hello\n" (includes delimiter)
+    /// assert_eq!(buffer.as_str().unwrap(), "Hello\nWorld");
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading, or UTF-8 validation errors.
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
