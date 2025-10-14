@@ -516,11 +516,11 @@ impl Buffer {
 
             // Fill all available space
             let bytes_read = match reader.read(&mut self.buf[self.len..self.cap]) {
-                    Err(e) => {
-                        self.shrink();
-                        return Err(e);
-                    }
-                    Ok(r) => r,
+                Err(e) => {
+                    self.shrink();
+                    return Err(e);
+                }
+                Ok(r) => r,
             };
 
             // Increase the length by the number of bytes read.
@@ -541,10 +541,15 @@ impl Buffer {
         Ok(total_bytes_read)
     }
 
-    /// Aligns a position to the next valid UTF-8 character boundary.
+    /// Aligns a position backward to the start of the current UTF-8 character.
     ///
-    /// If `pos` falls in the middle of a UTF-8 multi-byte character, this advances to the start
-    /// of the next character. The result is clamped to the range `self.pos()..=self.len()`.
+    /// If `pos` falls in the middle of a UTF-8 multi-byte character, this moves backward to the
+    /// start of that character. If already on a character boundary, returns that position.
+    /// The result is clamped to the range `self.pos()..=self.len()`.
+    ///
+    /// Note that if `self.pos()` itself is in the middle of a multi-byte character (e.g., after
+    /// [`consume()`](Self::consume) was called mid-character), the returned position may still
+    /// not be on a valid character boundary, as it cannot move before `self.pos()`.
     ///
     /// This is useful when working with UTF-8 text to ensure operations don't split characters.
     ///
@@ -558,6 +563,49 @@ impl Buffer {
     /// // "Hello, " = 7 bytes, '世' starts at byte 7 (3 bytes), '界' starts at byte 10
     /// // Position 8 is in the middle of the '世' character
     /// let aligned = buffer.align_pos_to_char(8);
+    /// assert_eq!(aligned, 7); // Aligned to start of '世'
+    /// ```
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "The invariant makes it safe"
+    )]
+    #[inline]
+    pub fn align_pos_to_char(&self, offset: usize) -> usize {
+        // Get the offset position clamped by: self.pos <= pos <= self.len
+        let offset = cmp::max(offset, self.pos).min(self.len);
+
+        // Find the position of first byte that is not a UTF-8 continuation byte
+        self.buf[self.pos..=offset]
+            .iter()
+            .rev()
+            // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
+            .position(|&b| b & 0b1100_0000 != 0b1000_0000)
+            .map_or(self.pos, |i| offset - i)
+    }
+
+    /// Aligns a position forward to the start of the next UTF-8 character.
+    ///
+    /// If `pos` falls in the middle of a UTF-8 multi-byte character, this moves forward to the
+    /// start of the following character. If already on a character boundary, returns that position.
+    /// The result is clamped to the range `self.pos()..=self.len()`.
+    ///
+    /// Note that if `self.len()` is in the middle of a multi-byte character (e.g., an incomplete
+    /// UTF-8 sequence at the end of the buffer), the returned position may still not be on a valid
+    /// character boundary, as it cannot move beyond `self.len()`.
+    ///
+    /// This is useful when working with UTF-8 text to ensure operations don't split characters.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new("Hello, 世界")).unwrap();
+    /// // "Hello, " = 7 bytes, '世' starts at byte 7 (3 bytes), '界' starts at byte 10
+    /// // Position 8 is in the middle of the '世' character
+    /// let aligned = buffer.align_pos_to_next_char(8);
     /// assert_eq!(aligned, 10); // Aligned to start of '界'
     /// ```
     #[expect(
@@ -566,16 +614,16 @@ impl Buffer {
         reason = "The invariant makes it safe"
     )]
     #[inline]
-    pub fn align_pos_to_char(&self, pos: usize) -> usize {
-        // Get the start position clamped by: self.pos <= pos <= self.len
-        let pos = cmp::max(pos, self.pos).min(self.len);
+    pub fn align_pos_to_next_char(&self, offset: usize) -> usize {
+        // Get the offset position clamped by: self.pos <= pos <= self.len
+        let offset = cmp::max(offset, self.pos).min(self.len);
 
         // Find the position of first byte that is not a UTF-8 continuation byte
-        self.buf[pos..self.len]
+        self.buf[offset..self.len]
             .iter()
             // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
             .position(|&b| b & 0b1100_0000 != 0b1000_0000)
-            .map_or(self.len, |i| i + pos)
+            .map_or(self.len, |i| i + offset)
     }
 
     /// Returns the unconsumed buffer data as a UTF-8 string slice.
@@ -633,7 +681,7 @@ impl Buffer {
         reason = "The invariant makes it safe"
     )]
     pub fn as_str_from(&self, pos: usize) -> io::Result<&str> {
-        let start = self.align_pos_to_char(pos);
+        let start = self.align_pos_to_next_char(pos);
 
         let mut end = self.len;
         while end > start {
@@ -693,7 +741,7 @@ impl Buffer {
         predicate: P,
     ) -> io::Result<usize> {
         // Get pos aligned to the next char, this is where we start checking against the predicate
-        let mut check_pos = self.align_pos_to_char(self.pos);
+        let mut check_pos = self.align_pos_to_next_char(self.pos);
         // The number of valid bytes read
         let mut total_valid_read = 0;
 
@@ -778,7 +826,7 @@ impl Buffer {
 
         // Check if we stopped at the delimiter (not EOF)
         // Align to the char boundary first
-        let check_start = self.align_pos_to_char(self.pos);
+        let check_start = self.align_pos_to_next_char(self.pos);
         let string = &self.as_str_from(check_start + valid_count)?;
         if let Some(ch) = string.chars().next() {
             if ch == delimiter {
@@ -1261,9 +1309,9 @@ mod tests {
         let cur = Cursor::new(text);
         buffer.fill(cur).unwrap();
         // "Hello, " = 7 bytes, '世' is 3 bytes (7-9), '界' is 3 bytes (10-12)
-        // Position 8 is in the middle of '世', should align to start of '界' at 10
+        // Position 8 is in the middle of '世', should align to start of '世' at 7
         let aligned = buffer.align_pos_to_char(8);
-        assert_eq!(aligned, 10);
+        assert_eq!(aligned, 7);
     }
 
     #[test]
@@ -1286,6 +1334,52 @@ mod tests {
         buffer.consume(5);
         // Trying to align before current pos should clamp to pos
         let aligned = buffer.align_pos_to_char(2);
+        assert_eq!(aligned, 5);
+    }
+
+    #[test]
+    fn test_align_pos_to_next_char_on_char_boundary() {
+        let mut buffer = Buffer::new();
+        let text = "Hello, 世界!";
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
+        // Position 7 is on a character boundary (start of '世')
+        let aligned = buffer.align_pos_to_next_char(7);
+        assert_eq!(aligned, 7);
+    }
+
+    #[test]
+    fn test_align_pos_to_next_char_middle_of_multibyte() {
+        let mut buffer = Buffer::new();
+        let text = "Hello, 世界!";
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
+        // "Hello, " = 7 bytes, '世' is 3 bytes (7-9), '界' is 3 bytes (10-12)
+        // Position 8 is in the middle of '世', should align to start of '界' at 10
+        let aligned = buffer.align_pos_to_next_char(8);
+        assert_eq!(aligned, 10);
+    }
+
+    #[test]
+    fn test_align_pos_to_next_char_beyond_len() {
+        let mut buffer = Buffer::new();
+        let text = "Hello";
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
+        // Position beyond len should clamp to len
+        let aligned = buffer.align_pos_to_next_char(100);
+        assert_eq!(aligned, 5);
+    }
+
+    #[test]
+    fn test_align_pos_to_next_char_before_pos() {
+        let mut buffer = Buffer::new();
+        let text = "Hello, World!";
+        let cur = Cursor::new(text);
+        buffer.fill(cur).unwrap();
+        buffer.consume(5);
+        // Trying to align before current pos should clamp to pos
+        let aligned = buffer.align_pos_to_next_char(2);
         assert_eq!(aligned, 5);
     }
 
