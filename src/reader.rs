@@ -1,24 +1,23 @@
 use crate::DynamicRead;
-use crate::constants::{CHUNK_SIZE, DEFAULT_MAX_SIZE, PRACTICAL_MAX_SIZE};
+use crate::constants::DEFAULT_MAX_SIZE;
 use crate::buffer::Buffer;
-use std::cmp;
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 
 pub struct Reader<R: ?Sized> {
     buffer: Buffer,
-    max_size: usize,
+    max_capacity: usize,
     reader: R,
 }
 
 impl<R: Read> Reader<R> {
     pub fn new(reader: R) -> Reader<R> {
-        Reader::with_max_size(DEFAULT_MAX_SIZE, reader)
+        Reader::with_max_capacity(DEFAULT_MAX_SIZE, reader)
     }
 
-    pub fn with_max_size(max_size: usize, reader: R) -> Reader<R> {
+    pub fn with_max_capacity(max_capacity: usize, reader: R) -> Reader<R> {
         Reader {
             buffer: Buffer::new(),
-            max_size: Buffer::cap_up(max_size),
+            max_capacity: Buffer::cap_up(max_capacity),
             reader,
         }
     }
@@ -28,7 +27,7 @@ impl<R: ?Sized> Reader<R> {
     // TODO: stuff
 
     pub fn grow(&mut self) {
-        if self.buffer.cap() < self.max_size {
+        if self.buffer.cap() < self.max_capacity {
             self.buffer.grow();
         }
     }
@@ -59,10 +58,14 @@ impl<R: Read + ?Sized> Read for Reader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.buffer.pos() >= self.buffer.len() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
-            // We've consumed all the data we have.
+            // We've consumed all the data we have
 
-            // Read at least the requested amount of data.
-            let _ = self.buffer.fill_amount(&mut self.reader, buf.len())?;
+            // Cap the fill amount to respect max_size
+            let max_allowed = self.max_capacity.saturating_sub(self.buffer.len());
+            let capped_amt = buf.len().min(max_allowed);
+
+            // Read at least the requested amount of data (up to max_size)
+            let _ = self.buffer.fill_amount(&mut self.reader, capped_amt)?;
         }
 
         // Get the range of data to give
@@ -88,6 +91,38 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         // Return the number of read bytes
         Ok(bytes_read)
     }
+}
+
+impl<R: Read + ?Sized> BufRead for Reader<R> {
+    #[expect(clippy::indexing_slicing, reason = "Buffer invariant makes it safe")]
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.buffer.pos() >= self.buffer.len() {
+            debug_assert!(self.buffer.pos() == self.buffer.len());
+            // We've consumed all the data we have
+
+            if self.buffer.len() >= self.buffer.cap() {
+                debug_assert!(self.buffer.len() == self.buffer.cap());
+                // The buffer is full
+
+                // Try to grow the buffer
+                self.grow();
+            }
+
+            // Read to fill the internal buffer
+            let _ = self.buffer.fill(&mut self.reader)?;
+        }
+
+        // Return buffered data
+        Ok(&self.buffer.buf()[self.buffer.pos()..])
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.consume(amt);
+    }
+}
+
+impl<R: Read + ?Sized> DynamicRead for Reader<R> {
+    // TODO
 }
 
 #[cfg(test)]
