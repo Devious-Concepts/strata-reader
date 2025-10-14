@@ -261,10 +261,32 @@ impl Buffer {
 
     /// Rounds capacity down to the nearest [`CHUNK_SIZE`] multiple.
     ///
-    /// Used internally for shrinking operations to maintain linear shrinking behavior.
+    /// This method implements the linear shrinking strategy used by the buffer. It rounds down
+    /// the given capacity to the nearest multiple of [`CHUNK_SIZE`], with a minimum of
+    /// [`CHUNK_SIZE`] and a maximum of [`PRACTICAL_MAX_SIZE`].
+    ///
+    /// # Use Cases
+    ///
+    /// - Calculating optimal buffer capacity when downsizing
+    /// - Pre-calculating shrink targets before performing operations
+    /// - Understanding the buffer's shrinking behavior
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// // Rounds down to nearest CHUNK_SIZE multiple
+    /// assert_eq!(Buffer::cap_down(CHUNK_SIZE + 1), CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_down(2 * CHUNK_SIZE + 100), 2 * CHUNK_SIZE);
+    ///
+    /// // Minimum is CHUNK_SIZE
+    /// assert_eq!(Buffer::cap_down(0), CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_down(CHUNK_SIZE / 2), CHUNK_SIZE);
+    /// ```
     #[inline]
     #[expect(clippy::arithmetic_side_effects, reason = "Bounds checks make it safe")]
-    fn cap_down(capacity: usize) -> usize {
+    pub fn cap_down(capacity: usize) -> usize {
         // The bounds checks prevent both underflow and overflow problems by setting the minimum at
         // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`]. The smallest value the calculation
         // can reach is `CHUNK_SIZE` when `capacity` is less than `2 * CHUNK_SIZE`.
@@ -285,10 +307,35 @@ impl Buffer {
 
     /// Rounds capacity up to the nearest power-of-2 multiple of [`CHUNK_SIZE`].
     ///
-    /// Used internally for growth operations to maintain exponential growth behavior.
+    /// This method implements the exponential growth strategy used by the buffer. It rounds up
+    /// the given capacity to the nearest power-of-2 multiple of [`CHUNK_SIZE`] (e.g.,
+    /// `CHUNK_SIZE`, `2 * CHUNK_SIZE`, `4 * CHUNK_SIZE`, etc.), with a minimum of [`CHUNK_SIZE`]
+    /// and a maximum of [`PRACTICAL_MAX_SIZE`].
+    ///
+    /// # Use Cases
+    ///
+    /// - Pre-allocating buffers with optimal capacity before operations
+    /// - Calculating growth targets to minimize reallocations
+    /// - Understanding the buffer's growth behavior
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// // Rounds up to nearest power-of-2 multiple of CHUNK_SIZE
+    /// assert_eq!(Buffer::cap_up(CHUNK_SIZE), CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_up(CHUNK_SIZE + 1), 2 * CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_up(2 * CHUNK_SIZE), 2 * CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_up(2 * CHUNK_SIZE + 1), 4 * CHUNK_SIZE);
+    ///
+    /// // Minimum is CHUNK_SIZE
+    /// assert_eq!(Buffer::cap_up(0), CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_up(100), CHUNK_SIZE); // if CHUNK_SIZE > 100
+    /// ```
     #[inline]
     #[expect(clippy::arithmetic_side_effects, reason = "Bounds checks make it safe")]
-    fn cap_up(capacity: usize) -> usize {
+    pub fn cap_up(capacity: usize) -> usize {
         // The bounds checks prevent both underflow and overflow problems by setting the minimum at
         // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`]. The max value that the power of two
         // calculation can reach is `PRACTICAL_MAX_SIZE / 2` when `capacity` is greater than
