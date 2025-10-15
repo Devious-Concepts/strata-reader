@@ -60,11 +60,11 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             debug_assert!(self.buffer.pos() == self.buffer.len());
             // We've consumed all the data we have
 
-            // Cap the fill amount to respect max_size
+            // Cap the fill amount to respect max_capacity
             let max_allowed = self.max_capacity.saturating_sub(self.buffer.len());
             let capped_amt = buf.len().min(max_allowed);
 
-            // Read at least the requested amount of data (up to max_size)
+            // Read at least the requested amount of data (up to max_capacity)
             let _ = self.buffer.fill_amount(&mut self.reader, capped_amt)?;
         }
 
@@ -122,10 +122,17 @@ impl<R: Read + ?Sized> BufRead for Reader<R> {
 }
 
 impl<R: Read + ?Sized> DynamicRead for Reader<R> {
-    // TODO
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
+    // TODO: more stuff...
+    fn grow(&mut self) {
+        self.grow();
+    }
+    fn shrink(&mut self) {
+        self.shrink();
+    }
+    fn discard(&mut self) {
+        self.discard();
+    }
+    fn compact(&mut self) {
+        self.compact();
+    }
 }

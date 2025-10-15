@@ -1,10 +1,8 @@
-use std::io::{self, BufRead};
+use std::io::BufRead;
 
-/// A `DynamicRead` is an alternative to `BufRead` with a buffer that can grow and shrink in size as
-/// needed. This allows for peeking far into this source without by growing the buffer as needed.
-/// Shrinking requires a manual call to [`compact()`].
-///
-/// TODO: More docs
-///
-/// [`compact()`]: DynamicRead::compact
-pub trait DynamicRead: BufRead {}
+pub trait DynamicRead: BufRead {
+    fn grow(&mut self);
+    fn shrink(&mut self);
+    fn discard(&mut self);
+    fn compact(&mut self);
+}
