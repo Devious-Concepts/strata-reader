@@ -49,6 +49,7 @@
   "cSpell.ignoreWords": [
     "MSVC",
     "Swatinem",
+    "bufread",
     "dtolnay",
     "expl_impl_clone_on_copy",
     "linkedlist",

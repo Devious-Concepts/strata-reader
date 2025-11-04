@@ -505,13 +505,15 @@ impl Buffer {
             if available < CHUNK_SIZE / 2 && remaining >= available {
                 // We've hit a point where growing would be more optimal than just filling the
                 // available space and the available space is too small.
-                if self.cap < PRACTICAL_MAX_SIZE {
-                    // Available space is insufficient, grow to the next size.
-                    self.grow();
-                } else {
-                    // Can't grow anymore.
+
+                // We've hit max capacity so we can't grow anymore.
+                if self.cap >= PRACTICAL_MAX_SIZE {
+                    debug_assert!(self.cap == PRACTICAL_MAX_SIZE);
                     break;
                 }
+
+                // Available space is insufficient, grow to the next size.
+                self.grow();
             }
 
             // Fill all available space
@@ -688,13 +690,13 @@ impl Buffer {
             match str::from_utf8(&self.buf[start..end]) {
                 Ok(s) => return Ok(s),
                 Err(e) => {
-                    if e.error_len().is_none() {
-                        // If we have an incomplete sequence at the end, then trim it
-                        end = start + e.valid_up_to();
-                    } else {
-                        // We have an invalid UTF-8 sequence in the middle
+                    // If we have an invalid UTF-8 sequence in the middle
+                    if e.error_len().is_some() {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, e));
                     }
+
+                    // We have an incomplete sequence at the end, so trim it
+                    end = start + e.valid_up_to();
                 }
             }
         }
@@ -1153,49 +1155,49 @@ mod tests {
     #[test]
     fn test_fill() {
         let mut buffer = Buffer::new();
-        let string = "Hello, World!";
+        let data = "Hello, World!";
 
-        let remainder = CHUNK_SIZE % string.len();
-        let fills = CHUNK_SIZE / string.len();
+        let remainder = CHUNK_SIZE % data.len();
+        let fills = CHUNK_SIZE / data.len();
 
         assert!(remainder > 0);
 
         // Repeatedly fill the buffer until it's almost full
         for n in 1..=fills {
-            let cur = Cursor::new(string);
+            let cur = Cursor::new(data);
             let read = buffer.fill(cur).unwrap();
             let pos = buffer.pos();
-            let data = buffer.buf().get(pos..pos + read).unwrap();
+            let read_data = &buffer.buf()[pos..pos + read];
 
-            assert_eq!(data, string.as_bytes());
-            assert_eq!(pos + read, n * string.len());
+            assert_eq!(read_data, data.as_bytes());
+            assert_eq!(pos + read, n * data.len());
 
             buffer.consume(read);
         }
 
         // Fill the last bit of space
-        let cur = Cursor::new(string);
+        let cur = Cursor::new(data);
         let read = buffer.fill(cur).unwrap();
         let pos = buffer.pos();
-        let data = buffer.buf().get(pos..pos + read).unwrap();
-        let fin = string.as_bytes().get(..remainder).unwrap();
+        let read_data = &buffer.buf()[pos..pos + read];
+        let source_data = &data.as_bytes()[..remainder];
 
-        assert_eq!(data, fin);
+        assert_eq!(read_data, source_data);
         assert_eq!(buffer.len(), CHUNK_SIZE);
     }
 
     #[test]
     fn test_fill_amount() {
         let mut buffer = Buffer::new();
-        let string = "Hello, World!";
+        let data = "Hello, World!";
 
         let amount = 3 * CHUNK_SIZE;
-        let remainder = amount % string.len();
-        let fills = amount / string.len();
+        let remainder = amount % data.len();
+        let fills = amount / data.len();
 
         assert!(remainder > 0);
 
-        let repeated = string.repeat(fills + 1);
+        let repeated = data.repeat(fills + 1);
         let cur = Cursor::new(repeated);
 
         // Fill the requested amount
@@ -1208,43 +1210,44 @@ mod tests {
         // Verify the data is correct
         for _ in 0..fills {
             let pos = buffer.pos();
-            let data = buffer.buf().get(pos..pos + string.len()).unwrap();
+            let read_data = &buffer.buf()[pos..pos + data.len()];
 
-            assert_eq!(data, string.as_bytes());
+            assert_eq!(read_data, data.as_bytes());
 
-            buffer.consume(string.len());
+            buffer.consume(data.len());
         }
 
         // Verify the last bit of data
         let pos = buffer.pos();
-        let data = buffer.buf().get(pos..pos + remainder).unwrap();
-        let fin = string.as_bytes().get(..remainder).unwrap();
-        assert_eq!(data, fin);
+        let read_data = &buffer.buf()[pos..pos + remainder];
+        let source_data = &data.as_bytes()[..remainder];
+
+        assert_eq!(read_data, source_data);
     }
 
     #[test]
     fn test_as_str_valid_ascii() {
         let mut buffer = Buffer::new();
-        let text = "Hello, World!";
-        let cur = Cursor::new(text);
+        let data = "Hello, World!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
     fn test_as_str_valid_multibyte() {
         let mut buffer = Buffer::new();
-        let text = "Hello, 世界!";
-        let cur = Cursor::new(text);
+        let data = "Hello, 世界!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
     fn test_as_str_partial_utf8_at_start() {
         let mut buffer = Buffer::new();
-        let text = "Hello, 世界!";
-        let cur = Cursor::new(text);
+        let data = "Hello, 世界!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // Use as_str_from with offset in the middle of "世" (3-byte UTF-8 character)
         let result = buffer.as_str_from(8).unwrap();
@@ -1254,8 +1257,8 @@ mod tests {
     #[test]
     fn test_as_str_partial_utf8_at_end() {
         let mut buffer = Buffer::new();
-        let text = "Hello, 世界";
-        let bytes = text.as_bytes();
+        let data = "Hello, 世界";
+        let bytes = data.as_bytes();
         let truncated = bytes.len() - 1;
         let cur = Cursor::new(&bytes[0..truncated]);
         buffer.fill(cur).unwrap();
@@ -1283,8 +1286,8 @@ mod tests {
     #[test]
     fn test_as_str_all_consumed() {
         let mut buffer = Buffer::new();
-        let text = "Hello";
-        let cur = Cursor::new(text);
+        let data = "Hello";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // Use as_str_from with offset at the end
         let result = buffer.as_str_from(5).unwrap();
@@ -1294,8 +1297,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_char_on_char_boundary() {
         let mut buffer = Buffer::new();
-        let text = "Hello, 世界!";
-        let cur = Cursor::new(text);
+        let data = "Hello, 世界!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // Position 7 is on a character boundary (start of '世')
         let aligned = buffer.align_pos_to_char(7);
@@ -1305,8 +1308,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_char_middle_of_multibyte() {
         let mut buffer = Buffer::new();
-        let text = "Hello, 世界!";
-        let cur = Cursor::new(text);
+        let data = "Hello, 世界!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // "Hello, " = 7 bytes, '世' is 3 bytes (7-9), '界' is 3 bytes (10-12)
         // Position 8 is in the middle of '世', should align to start of '世' at 7
@@ -1317,8 +1320,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_char_beyond_len() {
         let mut buffer = Buffer::new();
-        let text = "Hello";
-        let cur = Cursor::new(text);
+        let data = "Hello";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // Position beyond len should clamp to len
         let aligned = buffer.align_pos_to_char(100);
@@ -1328,8 +1331,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_char_before_pos() {
         let mut buffer = Buffer::new();
-        let text = "Hello, World!";
-        let cur = Cursor::new(text);
+        let data = "Hello, World!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         buffer.consume(5);
         // Trying to align before current pos should clamp to pos
@@ -1340,8 +1343,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_next_char_on_char_boundary() {
         let mut buffer = Buffer::new();
-        let text = "Hello, 世界!";
-        let cur = Cursor::new(text);
+        let data = "Hello, 世界!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // Position 7 is on a character boundary (start of '世')
         let aligned = buffer.align_pos_to_next_char(7);
@@ -1351,8 +1354,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_next_char_middle_of_multibyte() {
         let mut buffer = Buffer::new();
-        let text = "Hello, 世界!";
-        let cur = Cursor::new(text);
+        let data = "Hello, 世界!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // "Hello, " = 7 bytes, '世' is 3 bytes (7-9), '界' is 3 bytes (10-12)
         // Position 8 is in the middle of '世', should align to start of '界' at 10
@@ -1363,8 +1366,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_next_char_beyond_len() {
         let mut buffer = Buffer::new();
-        let text = "Hello";
-        let cur = Cursor::new(text);
+        let data = "Hello";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         // Position beyond len should clamp to len
         let aligned = buffer.align_pos_to_next_char(100);
@@ -1374,8 +1377,8 @@ mod tests {
     #[test]
     fn test_align_pos_to_next_char_before_pos() {
         let mut buffer = Buffer::new();
-        let text = "Hello, World!";
-        let cur = Cursor::new(text);
+        let data = "Hello, World!";
+        let cur = Cursor::new(data);
         buffer.fill(cur).unwrap();
         buffer.consume(5);
         // Trying to align before current pos should clamp to pos
@@ -1386,44 +1389,44 @@ mod tests {
     #[test]
     fn test_fill_while_basic() {
         let mut buffer = Buffer::new();
-        let text = "aaaaaHello";
-        let cur = Cursor::new(text);
+        let data = "aaaaaHello";
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
 
         assert_eq!(read, 5);
-        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.len(), data.len());
         assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
     fn test_fill_while_all_match() {
         let mut buffer = Buffer::new();
-        let text = "aaaaaaaaa";
-        let cur = Cursor::new(text);
+        let data = "aaaaaaaaa";
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
 
-        assert_eq!(read, text.len());
-        assert_eq!(buffer.len(), text.len());
+        assert_eq!(read, data.len());
+        assert_eq!(buffer.len(), data.len());
         assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
     fn test_fill_while_multibyte_chars() {
         let mut buffer = Buffer::new();
-        let text = "世界世界ABC";
-        let cur = Cursor::new(text);
+        let data = "世界世界ABC";
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_while(cur, |c| c == '世' || c == '界').unwrap();
 
         // Should read 4 chars * 3 bytes each = 12 bytes
         assert_eq!(read, 12);
-        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.len(), data.len());
         assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
@@ -1432,8 +1435,8 @@ mod tests {
 
         // Create text that breaks exactly at CHUNK_SIZE
         let prefix = "a".repeat(CHUNK_SIZE);
-        let text = format!("{prefix}b");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}b");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
 
@@ -1448,8 +1451,8 @@ mod tests {
 
         // Create text that breaks at CHUNK_SIZE + 1
         let prefix = "a".repeat(CHUNK_SIZE + 1);
-        let text = format!("{prefix}b");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}b");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
 
@@ -1464,8 +1467,8 @@ mod tests {
 
         // Create text where a multibyte char starts right at CHUNK_SIZE
         let prefix = "a".repeat(CHUNK_SIZE);
-        let text = format!("{prefix}世b");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}世b");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_while(cur, |c| c == 'a' || c == '世').unwrap();
 
@@ -1482,8 +1485,8 @@ mod tests {
         // Create text where a multibyte char that breaks the predicate is split at CHUNK_SIZE
         // The first byte of '世' will be at CHUNK_SIZE - 1, causing it to be split across reads
         let prefix = "a".repeat(CHUNK_SIZE - 1);
-        let text = format!("{prefix}世");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}世");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
 
@@ -1495,13 +1498,13 @@ mod tests {
     #[test]
     fn test_fill_while_with_existing_data() {
         let mut buffer = Buffer::new();
-        let text1 = "aaaaa";
-        let cur1 = Cursor::new(text1);
+        let data1 = "aaaaa";
+        let cur1 = Cursor::new(data1);
         buffer.fill(cur1).unwrap();
         buffer.consume(2); // Consume 2 'a's
 
-        let text2 = "aaHello";
-        let cur2 = Cursor::new(text2);
+        let data2 = "aaHello";
+        let cur2 = Cursor::new(data2);
 
         // Should read from existing position
         let read = buffer.fill_while(cur2, |c| c == 'a').unwrap();
@@ -1514,44 +1517,44 @@ mod tests {
     #[test]
     fn test_fill_until_basic() {
         let mut buffer = Buffer::new();
-        let text = "Hello\nWorld";
-        let cur = Cursor::new(text);
+        let data = "Hello\nWorld";
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '\n').unwrap();
 
         assert_eq!(read, 6); // "Hello\n"
-        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.len(), data.len());
         assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
     fn test_fill_until_not_found() {
         let mut buffer = Buffer::new();
-        let text = "Hello World";
-        let cur = Cursor::new(text);
+        let data = "Hello World";
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '\n').unwrap();
 
-        assert_eq!(read, text.len());
-        assert_eq!(buffer.len(), text.len());
+        assert_eq!(read, data.len());
+        assert_eq!(buffer.len(), data.len());
         assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
     fn test_fill_until_multibyte_delimiter() {
         let mut buffer = Buffer::new();
-        let text = "Hello世World";
-        let cur = Cursor::new(text);
+        let data = "Hello世World";
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '世').unwrap();
 
         // "Hello" (5 bytes) + "世" (3 bytes)
         assert_eq!(read, 8);
-        assert_eq!(buffer.len(), text.len());
+        assert_eq!(buffer.len(), data.len());
         assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), text);
+        assert_eq!(buffer.as_str().unwrap(), data);
     }
 
     #[test]
@@ -1560,8 +1563,8 @@ mod tests {
 
         // Create text where delimiter is exactly at CHUNK_SIZE
         let prefix = "a".repeat(CHUNK_SIZE);
-        let text = format!("{prefix}\n");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}\n");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '\n').unwrap();
 
@@ -1576,8 +1579,8 @@ mod tests {
 
         // Create text where delimiter is at CHUNK_SIZE + 1
         let prefix = "a".repeat(CHUNK_SIZE + 1);
-        let text = format!("{prefix}\n");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}\n");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '\n').unwrap();
 
@@ -1592,8 +1595,8 @@ mod tests {
 
         // Create text where multibyte delimiter starts at CHUNK_SIZE
         let prefix = "a".repeat(CHUNK_SIZE);
-        let text = format!("{prefix}世");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}世");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '世').unwrap();
 
@@ -1610,8 +1613,8 @@ mod tests {
         // Create text where a multibyte delimiter is split at CHUNK_SIZE
         // The first byte of '世' will be at CHUNK_SIZE - 1, causing it to be split across reads
         let prefix = "a".repeat(CHUNK_SIZE - 1);
-        let text = format!("{prefix}世");
-        let cur = Cursor::new(text);
+        let data = format!("{prefix}世");
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '世').unwrap();
 
@@ -1624,13 +1627,13 @@ mod tests {
     #[test]
     fn test_fill_until_with_existing_data() {
         let mut buffer = Buffer::new();
-        let text1 = "Hello";
-        let cur1 = Cursor::new(text1);
+        let data1 = "Hello";
+        let cur1 = Cursor::new(data1);
         buffer.fill(cur1).unwrap();
         buffer.consume(2); // Consume "He"
 
-        let text2 = "llo\nWorld";
-        let cur2 = Cursor::new(text2);
+        let data2 = "llo\nWorld";
+        let cur2 = Cursor::new(data2);
 
         // Should read from existing position and find delimiter
         let read = buffer.fill_until(cur2, '\n').unwrap();
@@ -1643,8 +1646,8 @@ mod tests {
     #[test]
     fn test_fill_until_immediate_delimiter() {
         let mut buffer = Buffer::new();
-        let text = "\nWorld";
-        let cur = Cursor::new(text);
+        let data = "\nWorld";
+        let cur = Cursor::new(data);
 
         let read = buffer.fill_until(cur, '\n').unwrap();
 
@@ -1801,9 +1804,9 @@ mod tests {
     fn test_fill_while_error_across_chunk_boundary() {
         let mut buffer = Buffer::new();
         let prefix = "a".repeat(CHUNK_SIZE + 10);
-        let text = format!("{prefix}b");
+        let data = format!("{prefix}b");
         let error_at = CHUNK_SIZE + 5;
-        let mut reader = ErrorReader::new(text.into_bytes(), error_at);
+        let mut reader = ErrorReader::new(data.into_bytes(), error_at);
 
         // Should read past chunk boundary then error
         let result = buffer.fill_while(&mut reader, |c| c == 'a');
@@ -1877,9 +1880,9 @@ mod tests {
     fn test_fill_until_error_across_chunk_boundary() {
         let mut buffer = Buffer::new();
         let prefix = "a".repeat(CHUNK_SIZE + 10);
-        let text = format!("{prefix}\n");
+        let data = format!("{prefix}\n");
         let error_at = CHUNK_SIZE + 5;
-        let mut reader = ErrorReader::new(text.into_bytes(), error_at);
+        let mut reader = ErrorReader::new(data.into_bytes(), error_at);
 
         // Should read past chunk boundary then error
         let result = buffer.fill_until(&mut reader, '\n');
