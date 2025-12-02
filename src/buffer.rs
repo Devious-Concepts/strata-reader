@@ -386,7 +386,8 @@ impl Buffer {
         self.cap = next;
     }
 
-    /// Shrinks the buffer capacity to the smallest [`CHUNK_SIZE`] multiple that fits the current data.
+    /// Shrinks the buffer capacity to the smallest [`CHUNK_SIZE`] multiple that fits the
+    /// current data.
     ///
     /// The capacity shrinks linearly to reduce memory usage while maintaining alignment with
     /// `CHUNK_SIZE` boundaries. Minimum capacity is always `CHUNK_SIZE`.
@@ -403,16 +404,30 @@ impl Buffer {
     /// buffer.shrink();
     /// assert_eq!(buffer.cap(), CHUNK_SIZE);  // Shrinks to minimum when empty
     /// ```
+    #[inline]
+    pub fn shrink(&mut self) {
+        self.shrink_targeted(None);
+    }
+
+    /// Shrinks the buffers capacity to the smallest [`CHUNK_SIZE`] multiple that fits the
+    /// current data or until a given target capacity.
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "The invariant makes it safe"
     )]
     #[inline]
-    pub fn shrink(&mut self) {
+    fn shrink_targeted(&mut self, target: Option<usize>) {
         // The length maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
 
         // Round `self.len()` up to the next chunk boundary to ensure `self.cap()` >= `self.len()`
-        let next = Self::cap_down(self.len + CHUNK_SIZE - 1);
+        let mut next = Self::cap_down(self.len + CHUNK_SIZE - 1);
+
+        // Raise the target capacity to shrink to if a target is set.
+        if let Some(target) = target {
+            // Round the target as well to be safe.
+            let next_target = Self::cap_down(target + CHUNK_SIZE - 1);
+            next = next.max(next_target);
+        }
 
         self.buf.truncate(next);
         self.buf.shrink_to(next);
@@ -421,9 +436,9 @@ impl Buffer {
 
     /// Fills the available space in the buffer from a reader.
     ///
-    /// Reads data to fill the buffer up to its current capacity. Does not grow the buffer.
-    /// Returns the number of bytes read, which may be 0 if the buffer is already full or if
-    /// the reader reaches EOF.
+    /// Reads data to fill the buffer up to its current capacity without growing the buffer.
+    /// The amount of bytes that where read is then returned. This may be 0 if the buffer is
+    /// already full or if the reader has reached EOF.
     ///
     /// # Examples
     ///
@@ -462,11 +477,14 @@ impl Buffer {
 
     /// Fills the buffer with at least `amt` bytes from a reader, growing as needed.
     ///
-    /// Automatically grows the buffer capacity to accommodate the requested amount of data.
-    /// Stops reading when at least `amt` bytes have been read, EOF is reached, or the maximum
-    /// capacity ([`PRACTICAL_MAX_SIZE`]) is reached.
+    /// Reads data to fill the buffer up to the requested amount of bytes, growing the capacity
+    /// of the buffer as needed. The amount of bytes that where read is then returned. This may
+    /// be 0 if the the `amt` is 0, the reader has reached EOF, or the maximum capacity
+    /// ([`PRACTICAL_MAX_SIZE`]) is reached.
     ///
-    /// After reading, the buffer is shrunk to fit the actual data read.
+    /// After reading, the buffers capacity is shrunk to fit the actual data read in order to
+    /// guard against overeager growth internally. Thus manual growth before calling this method
+    /// may be undone.
     ///
     /// # Examples
     ///
@@ -490,6 +508,9 @@ impl Buffer {
         reason = "The invariant makes it safe"
     )]
     pub fn fill_amount(&mut self, mut reader: impl Read, amt: usize) -> io::Result<usize> {
+        // Get the initial capacity so we don't shrink below it
+        let initial_capacity = self.cap;
+        // Track the total bytes read
         let mut total_bytes_read = 0;
 
         // Loop until we've read enough bytes or break
@@ -519,7 +540,7 @@ impl Buffer {
             // Fill all available space
             let bytes_read = match reader.read(&mut self.buf[self.len..self.cap]) {
                 Err(e) => {
-                    self.shrink();
+                    self.shrink_targeted(Some(initial_capacity));
                     return Err(e);
                 }
                 Ok(r) => r,
@@ -538,7 +559,7 @@ impl Buffer {
         }
 
         // Shrink in case we were overeager with our growth.
-        self.shrink();
+        self.shrink_targeted(Some(initial_capacity));
 
         Ok(total_bytes_read)
     }
@@ -549,9 +570,9 @@ impl Buffer {
     /// start of that character. If already on a character boundary, returns that position.
     /// The result is clamped to the range `self.pos()..=self.len()`.
     ///
-    /// Note that if `self.pos()` itself is in the middle of a multi-byte character (e.g., after
-    /// [`consume()`](Self::consume) was called mid-character), the returned position may still
-    /// not be on a valid character boundary, as it cannot move before `self.pos()`.
+    /// Note that if `self.pos()` itself is not on a UTF-8 character boundary (e.g., if
+    /// positioned within a multi-byte character), the returned position may still not be on a
+    /// valid character boundary, as it cannot move before `self.pos()`.
     ///
     /// This is useful when working with UTF-8 text to ensure operations don't split characters.
     ///
@@ -631,8 +652,8 @@ impl Buffer {
     /// Returns the unconsumed buffer data as a UTF-8 string slice.
     ///
     /// Automatically handles partial UTF-8 sequences by:
-    /// - Skipping incomplete sequences at the start (e.g., if [`consume()`](Self::consume) was
-    ///   called mid-character)
+    /// - Skipping incomplete sequences at the start (e.g., if `pos()` is not on a character
+    ///   boundary)
     /// - Trimming incomplete sequences at the end
     ///
     /// This is a convenience method for working with text data without manual UTF-8 handling.
@@ -714,9 +735,13 @@ impl Buffer {
     ///
     /// # Return Value
     ///
-    /// Returns the number of **valid UTF-8 bytes** that matched the predicate. Note that the
-    /// buffer may contain significantly more data than this count, since reads occur in chunks
-    /// and may include data beyond where the predicate first fails.
+    /// Returns the number of **valid UTF-8 bytes** that matched the predicate, excluding any
+    /// partial UTF-8 sequences at the start boundary (e.g., if `pos()` is not on a character
+    /// boundary). To use this as an index from [`pos()`](Self::pos), you must first align the
+    /// position with [`align_pos_to_next_char()`](Self::align_pos_to_next_char).
+    ///
+    /// Note that the buffer may contain significantly more data than this count, since reads
+    /// occur in chunks and may include data beyond where the predicate first fails.
     ///
     /// # Examples
     ///
@@ -742,6 +767,8 @@ impl Buffer {
         mut reader: impl Read,
         predicate: P,
     ) -> io::Result<usize> {
+        // Get the initial capacity so we don't shrink below it
+        let initial_capacity = self.cap;
         // Get pos aligned to the next char, this is where we start checking against the predicate
         let mut check_pos = self.align_pos_to_next_char(self.pos);
         // The number of valid bytes read
@@ -756,7 +783,8 @@ impl Buffer {
             let read = match self.fill(&mut reader) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.shrink();
+                    // Shrink back down on errors, since we grow eagerly.
+                    self.shrink_targeted(Some(initial_capacity));
                     return Err(e);
                 }
             };
@@ -785,7 +813,7 @@ impl Buffer {
         }
 
         // Shrink in case we were overeager with our growth.
-        self.shrink();
+        self.shrink_targeted(Some(initial_capacity));
 
         Ok(total_valid_read)
     }
@@ -800,9 +828,13 @@ impl Buffer {
     ///
     /// # Return Value
     ///
-    /// Returns the number of **valid UTF-8 bytes** **including the delimiter** if found. Note
-    /// that the buffer may contain significantly more data than this count, since reads occur in
-    /// chunks and may include data beyond the delimiter.
+    /// Returns the number of **valid UTF-8 bytes** **including the delimiter** if found,
+    /// excluding any partial UTF-8 sequences at the start boundary (e.g., if `pos()` is not on
+    /// a character boundary). To use this as an index from [`pos()`](Self::pos), you must first
+    /// align the position with [`align_pos_to_next_char()`](Self::align_pos_to_next_char).
+    ///
+    /// Note that the buffer may contain significantly more data than this count, since reads
+    /// occur in chunks and may include data beyond the delimiter.
     ///
     /// # Examples
     ///
