@@ -1,35 +1,138 @@
 //! High-performance buffer with dynamic capacity management.
 //!
-//! The [`Buffer`] type provides standalone buffered I/O operations with automatic growth
-//! and shrinking. It is also used as the internal buffer for [`Reader`](crate::Reader).
+//! The [`Buffer`] type provides standalone buffered I/O operations with both manual and automatic
+//! growth and shrinking of it's capacity. It is used as the internal buffer for
+//! [`Reader`](crate::Reader).
 //!
 //! # Example
 //!
 //! ```
-//! use strata_reader::buffer::Buffer;
+//! use strata_reader::buffer::{Buffer, GrowingFillResult};
 //! use std::io::Cursor;
 //!
+//! let cur = Cursor::new("aaaa:bbbb");
 //! let mut buffer = Buffer::new();
-//! let mut reader = Cursor::new("aaaa:bbbb");
 //!
 //! // Read until delimiter
-//! let count = buffer.fill_until(&mut reader, ':').unwrap();
-//! assert_eq!(count, 5); // "aaaa:" (includes delimiter)
+//! let result = buffer.fill_until(cur, ':', None).unwrap();
+//! assert!(matches!(result, GrowingFillResult::Complete(5))); // "aaaa:" (includes delimiter)
 //!
-//! // Access the data
+//! // Access the read data
 //! assert_eq!(buffer.as_str().unwrap(), "aaaa:bbbb");
 //!
 //! // Consume what we processed
-//! buffer.consume(count);
+//! buffer.consume(result.count());
 //!
 //! // Process remaining data
 //! assert_eq!(buffer.as_str().unwrap(), "bbbb");
 //! ```
 
+use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
 use std::cmp;
 use std::io::{self, Read};
 
-use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
+/// Result type for the non-growing fill operations.
+///
+/// This type is returned by [`fill`](Buffer::fill), which reads data into the buffer's
+/// current capacity without growing it. The operation is limited by the available space
+/// in the buffer's current allocation.
+///
+/// The contained byte count represents the total bytes read from the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillResult {
+    /// The operation completed successfully.
+    ///
+    /// Contains the byte count.
+    Complete(usize),
+
+    /// The operation stopped because end-of-file was reached.
+    ///
+    /// Contains the number of bytes successfully read before EOF was reached.
+    Eof(usize),
+}
+
+impl FillResult {
+    /// Returns the byte count, regardless of completion status.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::FillResult;
+    /// assert_eq!(FillResult::Complete(42).count(), 42);
+    /// assert_eq!(FillResult::Eof(10).count(), 10);
+    /// ```
+    pub const fn count(&self) -> usize {
+        match self {
+            Self::Complete(n) | Self::Eof(n) => *n,
+        }
+    }
+}
+
+/// Result type for growing fill operations.
+///
+/// This type is returned by [`fill_amount`](Buffer::fill_amount),
+/// [`fill_while`](Buffer::fill_while), and [`fill_until`](Buffer::fill_until). These operations
+/// dynamically grow the buffer to accommodate more data, but could hit a set maximum capacity
+/// before completing or reaching EOF.
+///
+/// The contained byte count represents:
+/// - For [`fill_amount`](Buffer::fill_amount): Total bytes read from the reader
+/// - For [`fill_while`](Buffer::fill_while): Valid UTF-8 bytes matching the predicate
+/// - For [`fill_until`](Buffer::fill_until): Valid UTF-8 bytes up to and including the delimiter
+///
+/// Note that for `fill_while` and `fill_until`, the buffer may contain more data than the
+/// returned count since reads occur in chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrowingFillResult {
+    /// The operation completed successfully.
+    ///
+    /// For [`fill_amount`](Buffer::fill_amount): The requested amount was read.
+    /// For [`fill_while`](Buffer::fill_while): A character not matching the predicate was found.
+    /// For [`fill_until`](Buffer::fill_until): The delimiter was found.
+    ///
+    /// Contains the byte count.
+    Complete(usize),
+
+    /// The operation stopped because end-of-file was reached.
+    ///
+    /// Contains the number of bytes successfully read before EOF was reached.
+    Eof(usize),
+
+    /// The operation stopped because the maximum capacity was reached.
+    ///
+    /// The buffer cannot grow beyond the specified maximum capacity (or [`PRACTICAL_MAX_SIZE`]
+    /// if no maximum was specified).
+    ///
+    /// Contains the number of bytes successfully read before the capacity limit was reached.
+    Capped(usize),
+}
+
+impl GrowingFillResult {
+    /// Returns the byte count, regardless of completion status.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::GrowingFillResult;
+    /// assert_eq!(GrowingFillResult::Complete(42).count(), 42);
+    /// assert_eq!(GrowingFillResult::Eof(10).count(), 10);
+    /// assert_eq!(GrowingFillResult::Capped(100).count(), 100);
+    /// ```
+    pub const fn count(&self) -> usize {
+        match self {
+            Self::Complete(n) | Self::Eof(n) | Self::Capped(n) => *n,
+        }
+    }
+}
+
+impl From<FillResult> for GrowingFillResult {
+    fn from(result: FillResult) -> Self {
+        match result {
+            FillResult::Complete(n) => GrowingFillResult::Complete(n),
+            FillResult::Eof(n) => GrowingFillResult::Eof(n),
+        }
+    }
+}
 
 /// A dynamically sized buffer with chunked capacity management.
 ///
@@ -58,9 +161,9 @@ use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
 ///
 /// # Invariants
 ///
-/// This buffer maintains the invariant `0 <= self.pos <= self.len <= self.buf.len() <= self.cap <=
+/// This buffer maintains the invariant `0 <= self.pos <= self.len <= self.cap == self.buf.len() <=
 /// self.buf.capacity()` at all times, ensuring memory safety and correctness of all operations.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
     /// Internal buffer storage.
     buf: Vec<u8>,
@@ -70,6 +173,12 @@ pub struct Buffer {
     len: usize,
     /// Number of bytes that have been consumed (read position).
     pos: usize,
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Buffer {
@@ -96,8 +205,8 @@ impl Buffer {
 
     /// Creates a new buffer with at least the specified capacity.
     ///
-    /// The actual capacity will be rounded up to the nearest power-of-2 multiple of
-    /// [`CHUNK_SIZE`] that can accommodate the requested capacity.
+    /// The actual capacity will be rounded up to the nearest [`CHUNK_SIZE`] multiple
+    /// that can accommodate the requested capacity.
     ///
     /// # Examples
     ///
@@ -107,11 +216,15 @@ impl Buffer {
     /// let buffer = Buffer::with_capacity(100);
     /// assert!(buffer.cap() >= 100);
     /// assert_eq!(buffer.cap() % CHUNK_SIZE, 0); // Aligned to CHUNK_SIZE
+    ///
+    /// // Gets exact multiple, not power-of-2
+    /// let buffer = Buffer::with_capacity(5 * CHUNK_SIZE);
+    /// assert_eq!(buffer.cap(), 5 * CHUNK_SIZE);
     /// ```
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        // Round up to fit the requested capacity
-        let cap = Self::cap_up(capacity);
+        // Round up to fit the requested capacity (linear, not exponential)
+        let cap = Self::cap_up_linear(capacity);
 
         Self {
             buf: vec![0; cap],
@@ -140,7 +253,7 @@ impl Buffer {
     /// assert_eq!(slice.len(), 13); // Full data length
     /// // Access unconsumed data: &slice[buffer.pos()..]
     /// ```
-    #[expect(clippy::indexing_slicing, reason = "The invariant makes it safe")]
+    #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
     #[inline]
     pub fn buf(&self) -> &[u8] {
         &self.buf[..self.len]
@@ -180,27 +293,49 @@ impl Buffer {
         self.pos
     }
 
-    /// Discards all data in the buffer and shrinks capacity.
+    /// Discards all data in the buffer without changing capacity.
     ///
-    /// Resets both the read position and length to zero, then shrinks the buffer to
-    /// [`CHUNK_SIZE`].
+    /// Resets both the read position and length to zero, but keeps the current
+    /// buffer capacity unchanged.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::{buffer::Buffer, constants::CHUNK_SIZE};
     /// # use std::io::Cursor;
-    /// let mut buffer = Buffer::new();
+    /// let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
+    /// buffer.fill(Cursor::new(b"data")).unwrap();
+    /// buffer.clear();
+    /// assert_eq!(buffer.len(), 0);
+    /// assert_eq!(buffer.pos(), 0);
+    /// assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
+    /// ```
+    #[inline]
+    pub fn clear(&mut self) {
+        self.pos = 0;
+        self.len = 0;
+    }
+
+    /// Discards all data in the buffer and shrinks capacity.
+    ///
+    /// Resets both the read position and length to zero, then shrinks the buffer
+    /// to the minimum capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::{buffer::Buffer, constants::CHUNK_SIZE};
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
     /// buffer.fill(Cursor::new(b"data")).unwrap();
     /// buffer.discard();
     /// assert_eq!(buffer.len(), 0);
     /// assert_eq!(buffer.pos(), 0);
+    /// assert_eq!(buffer.cap(), CHUNK_SIZE);
     /// ```
     #[inline]
     pub fn discard(&mut self) {
-        self.pos = 0;
-        self.len = 0;
-
+        self.clear();
         self.shrink();
     }
 
@@ -219,20 +354,20 @@ impl Buffer {
     /// buffer.consume(2);
     /// assert_eq!(buffer.pos(), 2);
     /// ```
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "The invariant makes it safe"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
     #[inline]
     pub fn consume(&mut self, amt: usize) {
         self.pos = cmp::min(self.pos + amt, self.len);
     }
 
-    /// Removes consumed bytes from the buffer and shrinks capacity.
+    /// Removes consumed bytes from the buffer by moving unconsumed data to the start.
     ///
-    /// Moves unconsumed data to the beginning of the buffer using `copy_within`, resets the
-    /// read position to 0, and shrinks the capacity to fit the remaining data. This operation
-    /// is useful after consuming a significant amount of data to reclaim space.
+    /// Moves unconsumed data to the beginning of the buffer using `copy_within` and resets the
+    /// read position to 0. The capacity remains unchanged - use [`shrink()`](Self::shrink) or
+    /// [`shrink_targeted()`](Self::shrink_targeted) afterwards if you want to reduce capacity.
+    ///
+    /// This operation is useful after consuming a significant amount of data to make room for
+    /// more reads without growing the buffer.
     ///
     /// # Examples
     ///
@@ -242,21 +377,23 @@ impl Buffer {
     /// let mut buffer = Buffer::new();
     /// buffer.fill(Cursor::new(b"Hello, World!")).unwrap();
     /// buffer.consume(7);  // Consume "Hello, "
+    ///
+    /// let cap_before = buffer.cap();
     /// buffer.compact();   // Move "World!" to start
+    ///
     /// assert_eq!(buffer.pos(), 0);
     /// assert_eq!(buffer.len(), 6);  // "World!"
+    /// assert_eq!(buffer.cap(), cap_before);  // Capacity unchanged
+    ///
+    /// // Optionally shrink afterwards
+    /// buffer.shrink();
     /// ```
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "The invariant makes it safe"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
     #[inline]
     pub fn compact(&mut self) {
         self.buf.copy_within(self.pos..self.len, 0);
         self.len -= self.pos;
         self.pos = 0;
-
-        self.shrink();
     }
 
     /// Rounds capacity down to the nearest [`CHUNK_SIZE`] multiple.
@@ -285,7 +422,7 @@ impl Buffer {
     /// assert_eq!(Buffer::cap_down(CHUNK_SIZE / 2), CHUNK_SIZE);
     /// ```
     #[inline]
-    #[expect(clippy::arithmetic_side_effects, reason = "Bounds checks make it safe")]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by bounds checks")]
     pub fn cap_down(capacity: usize) -> usize {
         // The bounds checks prevent both underflow and overflow problems by setting the minimum at
         // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`]. The smallest value the calculation
@@ -331,15 +468,14 @@ impl Buffer {
     ///
     /// // Minimum is CHUNK_SIZE
     /// assert_eq!(Buffer::cap_up(0), CHUNK_SIZE);
-    /// assert_eq!(Buffer::cap_up(100), CHUNK_SIZE); // if CHUNK_SIZE > 100
+    /// assert_eq!(Buffer::cap_up(100), CHUNK_SIZE);
     /// ```
     #[inline]
-    #[expect(clippy::arithmetic_side_effects, reason = "Bounds checks make it safe")]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by bounds checks")]
     pub fn cap_up(capacity: usize) -> usize {
         // The bounds checks prevent both underflow and overflow problems by setting the minimum at
-        // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`]. The max value that the power of two
-        // calculation can reach is `PRACTICAL_MAX_SIZE / 2` when `capacity` is greater than
-        // `PRACTICAL_MAX_SIZE / 4`.
+        // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`]. The early return for large capacities
+        // ensures that power-of-two calculations cannot overflow.
 
         // Max bounds check
         if capacity >= PRACTICAL_MAX_SIZE >> 1 {
@@ -353,6 +489,55 @@ impl Buffer {
 
         // Round up `capacity` to the nearest power of two multiple of `CHUNK_SIZE`
         ((capacity + CHUNK_SIZE - 1) / CHUNK_SIZE).next_power_of_two() * CHUNK_SIZE
+    }
+
+    /// Rounds capacity up to the nearest [`CHUNK_SIZE`] multiple (linear).
+    ///
+    /// This method provides linear capacity rounding, useful for precise capacity allocation.
+    /// It rounds up the given capacity to the nearest multiple of [`CHUNK_SIZE`], with a minimum
+    /// of [`CHUNK_SIZE`] and a maximum of [`PRACTICAL_MAX_SIZE`].
+    ///
+    /// Unlike [`cap_up`](Self::cap_up) which uses exponential (power-of-2) rounding, this method
+    /// provides exact multiples of [`CHUNK_SIZE`].
+    ///
+    /// # Use Cases
+    ///
+    /// - Allocating buffers with precise capacity requirements
+    /// - Pre-allocating exactly the needed amount without over-allocation
+    /// - Creating buffers where you know the exact size needed
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// // Rounds up to nearest CHUNK_SIZE multiple
+    /// assert_eq!(Buffer::cap_up_linear(CHUNK_SIZE + 1), 2 * CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_up_linear(2 * CHUNK_SIZE), 2 * CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_up_linear(5 * CHUNK_SIZE - 1), 5 * CHUNK_SIZE);
+    ///
+    /// // Minimum is CHUNK_SIZE
+    /// assert_eq!(Buffer::cap_up_linear(0), CHUNK_SIZE);
+    /// assert_eq!(Buffer::cap_up_linear(100), CHUNK_SIZE);
+    /// ```
+    #[inline]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by bounds checks")]
+    pub fn cap_up_linear(capacity: usize) -> usize {
+        // The bounds checks prevent both underflow and overflow problems by setting the minimum at
+        // `CHUNK_SIZE` and maximum at [`PRACTICAL_MAX_SIZE`].
+
+        // Max bounds check
+        if capacity >= PRACTICAL_MAX_SIZE {
+            return PRACTICAL_MAX_SIZE;
+        }
+
+        // Min bounds check
+        if capacity < CHUNK_SIZE {
+            return CHUNK_SIZE;
+        }
+
+        // Round up `capacity` to the nearest multiple of `CHUNK_SIZE`
+        ((capacity + CHUNK_SIZE - 1) / CHUNK_SIZE) * CHUNK_SIZE
     }
 
     /// Grows the buffer capacity to the next power-of-2 multiple of [`CHUNK_SIZE`].
@@ -370,10 +555,7 @@ impl Buffer {
     /// buffer.grow();
     /// assert_eq!(buffer.cap(), 2 * initial_cap);
     /// ```
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "The invariant makes it safe"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
     #[inline]
     pub fn grow(&mut self) {
         // The capacity maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
@@ -386,48 +568,68 @@ impl Buffer {
         self.cap = next;
     }
 
-    /// Shrinks the buffer capacity to the smallest [`CHUNK_SIZE`] multiple that fits the
-    /// current data.
+    /// Shrinks the buffer capacity to fit the current data.
     ///
-    /// The capacity shrinks linearly to reduce memory usage while maintaining alignment with
-    /// `CHUNK_SIZE` boundaries. Minimum capacity is always `CHUNK_SIZE`.
+    /// Reduces the buffer's capacity to the smallest [`CHUNK_SIZE`] multiple that can hold the
+    /// current data. The minimum capacity is always [`CHUNK_SIZE`]. This is useful for reclaiming
+    /// memory after operations that left the buffer over-allocated.
     ///
-    /// This method is called automatically by [`compact()`](Self::compact) and
-    /// [`discard()`](Self::discard).
+    /// For more control over the target capacity, use [`shrink_targeted()`](Self::shrink_targeted).
     ///
     /// # Examples
     ///
     /// ```
     /// # use strata_reader::buffer::Buffer;
     /// # use strata_reader::constants::CHUNK_SIZE;
+    /// # use std::io::Cursor;
     /// let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
+    /// buffer.fill(Cursor::new(b"Hello")).unwrap();
+    ///
     /// buffer.shrink();
-    /// assert_eq!(buffer.cap(), CHUNK_SIZE);  // Shrinks to minimum when empty
+    /// assert_eq!(buffer.cap(), CHUNK_SIZE);  // Shrinks to minimum for small data
+    /// assert_eq!(buffer.len(), 5);
     /// ```
     #[inline]
     pub fn shrink(&mut self) {
-        self.shrink_targeted(None);
+        self.shrink_targeted(CHUNK_SIZE);
     }
 
-    /// Shrinks the buffers capacity to the smallest [`CHUNK_SIZE`] multiple that fits the
-    /// current data or until a given target capacity.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "The invariant makes it safe"
-    )]
+    /// Shrinks the buffer capacity to fit the current data or a target capacity, whichever is larger.
+    ///
+    /// Reduces the buffer's capacity to the smallest [`CHUNK_SIZE`] multiple that can hold either
+    /// the current data or the specified target capacity, whichever requires more space. The minimum
+    /// capacity is always [`CHUNK_SIZE`].
+    ///
+    /// This is useful when you want to shrink the buffer but maintain a minimum capacity for future
+    /// operations, avoiding frequent reallocations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
+    /// buffer.fill(Cursor::new(b"Hello")).unwrap();
+    ///
+    /// // Shrink but keep at least 4x CHUNK_SIZE
+    /// buffer.shrink_targeted(4 * CHUNK_SIZE);
+    /// assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+    ///
+    /// // Shrink to fit data (smaller than target)
+    /// buffer.shrink_targeted(CHUNK_SIZE / 2);
+    /// assert_eq!(buffer.cap(), CHUNK_SIZE);  // Can't go below data size
+    /// ```
     #[inline]
-    fn shrink_targeted(&mut self, target: Option<usize>) {
+    pub fn shrink_targeted(&mut self, target: usize) {
         // The length maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
 
         // Round `self.len()` up to the next chunk boundary to ensure `self.cap()` >= `self.len()`
-        let mut next = Self::cap_down(self.len + CHUNK_SIZE - 1);
+        let mut next = Self::cap_up_linear(self.len);
 
-        // Raise the target capacity to shrink to if a target is set.
-        if let Some(target) = target {
-            // Round the target as well to be safe.
-            let next_target = Self::cap_down(target + CHUNK_SIZE - 1);
-            next = next.max(next_target);
-        }
+        // Round the target as well to be safe, then use the larger of data size or target
+        let next_target = Self::cap_up_linear(target);
+        next = next.max(next_target);
 
         self.buf.truncate(next);
         self.buf.shrink_to(next);
@@ -437,19 +639,29 @@ impl Buffer {
     /// Fills the available space in the buffer from a reader.
     ///
     /// Reads data to fill the buffer up to its current capacity without growing the buffer.
-    /// The amount of bytes that where read is then returned. This may be 0 if the buffer is
-    /// already full or if the reader has reached EOF.
+    /// Returns a [`FillResult`] with the number of bytes read and context about how the
+    /// operation completed:
+    ///
+    /// - [`FillResult::Complete`]: The buffer was filled to capacity (or was already full).
+    /// - [`FillResult::Eof`]: The reader reached end-of-file before filling the buffer.
+    ///
+    /// Both variants represent successful operations - the byte count may be 0 if the buffer
+    /// is already full or the reader is at EOF.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::buffer::{Buffer, FillResult};
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// let mut reader = Cursor::new(b"Hello, World!");
-    /// let bytes_read = buffer.fill(&mut reader).unwrap();
-    /// assert_eq!(bytes_read, 13);
+    /// let result = buffer.fill(&mut reader).unwrap();
+    /// assert!(matches!(result, FillResult::Eof(13)));
     /// assert_eq!(buffer.len(), 13);
+    ///
+    /// // Reading from EOF returns Eof(0)
+    /// let result = buffer.fill(&mut reader).unwrap();
+    /// assert!(matches!(result, FillResult::Eof(0)));
     /// ```
     ///
     /// # Errors
@@ -458,45 +670,53 @@ impl Buffer {
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
-        reason = "The invariant makes it safe"
+        reason = "Safe by invariant"
     )]
-    pub fn fill(&mut self, mut reader: impl Read) -> io::Result<usize> {
+    pub fn fill(&mut self, mut reader: impl Read) -> io::Result<FillResult> {
         let mut bytes_read = 0;
 
-        // Check if there is space available to fill
-        if self.len < self.cap {
-            // Read to fill the remaining space.
-            bytes_read += reader.read(&mut self.buf[self.len..self.cap])?;
+        if self.len >= self.cap {
+            debug_assert!(self.len == self.cap);
 
-            // Increase the length by the number of bytes read.
-            self.len += bytes_read;
+            // Buffer is full, nothing to read.
+            return Ok(FillResult::Complete(0));
         }
 
-        Ok(bytes_read)
+        // Read to fill the remaining space.
+        bytes_read += reader.read(&mut self.buf[self.len..self.cap])?;
+
+        // Increase the length by the number of bytes read.
+        self.len += bytes_read;
+
+        if self.len < self.cap {
+            // EOF reached.
+            return Ok(FillResult::Eof(bytes_read));
+        }
+
+        Ok(FillResult::Complete(bytes_read))
     }
 
     /// Fills the buffer with at least `amt` bytes from a reader, growing as needed.
     ///
-    /// Reads data to fill the buffer up to the requested amount of bytes, growing the capacity
-    /// of the buffer as needed. The amount of bytes that where read is then returned. This may
-    /// be 0 if the the `amt` is 0, the reader has reached EOF, or the maximum capacity
-    /// ([`PRACTICAL_MAX_SIZE`]) is reached.
+    /// Reads data until the requested amount is read, EOF is reached, or the maximum capacity
+    /// is hit. The buffer grows exponentially as needed. On successful completion, the capacity
+    /// is shrunk to fit the data but never below the starting capacity. On EOF or capacity limit,
+    /// no shrinking occurs.
     ///
-    /// After reading, the buffers capacity is shrunk to fit the actual data read in order to
-    /// guard against overeager growth internally. Thus manual growth before calling this method
-    /// may be undone.
+    /// The total amount of bytes read is returned.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::buffer::{Buffer, GrowingFillResult};
     /// # use strata_reader::constants::CHUNK_SIZE;
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// let data = vec![0u8; 3 * CHUNK_SIZE];
     /// let mut reader = Cursor::new(data);
-    /// let bytes_read = buffer.fill_amount(&mut reader, 3 * CHUNK_SIZE).unwrap();
-    /// assert!(bytes_read >= 3 * CHUNK_SIZE);
+    /// let result = buffer.fill_amount(&mut reader, 3 * CHUNK_SIZE, None).unwrap();
+    /// assert!(matches!(result, GrowingFillResult::Complete(_)));
+    /// assert!(result.count() >= 3 * CHUNK_SIZE);
     /// ```
     ///
     /// # Errors
@@ -505,63 +725,73 @@ impl Buffer {
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
-        reason = "The invariant makes it safe"
+        reason = "Safe by invariant"
     )]
-    pub fn fill_amount(&mut self, mut reader: impl Read, amt: usize) -> io::Result<usize> {
-        // Get the initial capacity so we don't shrink below it
-        let initial_capacity = self.cap;
+    pub fn fill_amount(
+        &mut self,
+        mut reader: impl Read,
+        amt: usize,
+        max_capacity: Option<usize>,
+    ) -> io::Result<GrowingFillResult> {
+        // Get the maximum capacity so we don't grow beyond it
+        let max_capacity = max_capacity.unwrap_or(PRACTICAL_MAX_SIZE);
+        // Capture starting capacity to use as shrink limit
+        let starting_capacity = self.cap;
         // Track the total bytes read
         let mut total_bytes_read = 0;
 
         // Loop until we've read enough bytes or break
         while total_bytes_read < amt {
-            // Get available space.
+            // Get available space
             let available = self.cap - self.len;
 
-            // Get remaining amount to read.
+            // Get remaining amount to read
             let remaining = amt - total_bytes_read;
 
             // Note regarding `CHUNK_SIZE / 2`: This should align with a common page size by the
             // very definition of how `CHUNK_SIZE` is set and what values are valid for it.
-            if available < CHUNK_SIZE / 2 && remaining >= available {
+            if available < CHUNK_SIZE / 2 && remaining >= available && self.cap < max_capacity {
                 // We've hit a point where growing would be more optimal than just filling the
-                // available space and the available space is too small.
+                // available space. And the available space is too small and we haven't hit max
+                // capacity yet.
 
-                // We've hit max capacity so we can't grow anymore.
-                if self.cap >= PRACTICAL_MAX_SIZE {
-                    debug_assert!(self.cap == PRACTICAL_MAX_SIZE);
-                    break;
-                }
-
-                // Available space is insufficient, grow to the next size.
+                // Available space is insufficient, grow to the next size
                 self.grow();
+            }
+
+            // At this point, if the buffer is full, we've hit max capacity
+            if self.len >= self.cap {
+                debug_assert!(self.len == self.cap);
+
+                // We've filled the buffer to max capacity
+                return Ok(GrowingFillResult::Capped(total_bytes_read));
             }
 
             // Fill all available space
             let bytes_read = match reader.read(&mut self.buf[self.len..self.cap]) {
                 Err(e) => {
-                    self.shrink_targeted(Some(initial_capacity));
+                    self.shrink_targeted(starting_capacity);
                     return Err(e);
                 }
                 Ok(r) => r,
             };
 
-            // Increase the length by the number of bytes read.
+            // Increase the length by the number of bytes read
             self.len += bytes_read;
 
-            // Increase the total number of bytes read.
+            // Increase the total number of bytes read
             total_bytes_read += bytes_read;
 
             if bytes_read == 0 {
-                // We've hit EOF.
-                break;
+                // We've hit EOF
+                return Ok(GrowingFillResult::Eof(total_bytes_read));
             }
         }
 
-        // Shrink in case we were overeager with our growth.
-        self.shrink_targeted(Some(initial_capacity));
+        // Shrink in case we were overeager with our growth
+        self.shrink_targeted(starting_capacity);
 
-        Ok(total_bytes_read)
+        Ok(GrowingFillResult::Complete(total_bytes_read))
     }
 
     /// Aligns a position backward to the start of the current UTF-8 character.
@@ -570,9 +800,9 @@ impl Buffer {
     /// start of that character. If already on a character boundary, returns that position.
     /// The result is clamped to the range `self.pos()..=self.len()`.
     ///
-    /// Note that if `self.pos()` itself is not on a UTF-8 character boundary (e.g., if
-    /// positioned within a multi-byte character), the returned position may still not be on a
-    /// valid character boundary, as it cannot move before `self.pos()`.
+    /// Note that if `self.pos()` itself is not on a UTF-8 character boundary (e.g., if positioned
+    /// within a multi-byte character), the returned position may still not be on a valid character
+    /// boundary, as it cannot move before `self.pos()`.
     ///
     /// This is useful when working with UTF-8 text to ensure operations don't split characters.
     ///
@@ -582,8 +812,8 @@ impl Buffer {
     /// # use strata_reader::buffer::Buffer;
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
-    /// buffer.fill(Cursor::new("Hello, 世界")).unwrap();
-    /// // "Hello, " = 7 bytes, '世' starts at byte 7 (3 bytes), '界' starts at byte 10
+    /// buffer.fill(Cursor::new("Hello, 世界!")).unwrap(); // 世界 is World in Japanese
+    /// // "Hello, " = 7 bytes, '世' starts at byte 7 and is 3 bytes long, '界' starts at byte 10
     /// // Position 8 is in the middle of the '世' character
     /// let aligned = buffer.align_pos_to_char(8);
     /// assert_eq!(aligned, 7); // Aligned to start of '世'
@@ -591,7 +821,7 @@ impl Buffer {
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
-        reason = "The invariant makes it safe"
+        reason = "Safe by invariant"
     )]
     #[inline]
     pub fn align_pos_to_char(&self, offset: usize) -> usize {
@@ -625,8 +855,8 @@ impl Buffer {
     /// # use strata_reader::buffer::Buffer;
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
-    /// buffer.fill(Cursor::new("Hello, 世界")).unwrap();
-    /// // "Hello, " = 7 bytes, '世' starts at byte 7 (3 bytes), '界' starts at byte 10
+    /// buffer.fill(Cursor::new("Hello, 世界!")).unwrap(); // 世界 is World in Japanese
+    /// // "Hello, " = 7 bytes, '世' starts at byte 7 and is 3 bytes long, '界' starts at byte 10
     /// // Position 8 is in the middle of the '世' character
     /// let aligned = buffer.align_pos_to_next_char(8);
     /// assert_eq!(aligned, 10); // Aligned to start of '界'
@@ -634,7 +864,7 @@ impl Buffer {
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
-        reason = "The invariant makes it safe"
+        reason = "Safe by invariant"
     )]
     #[inline]
     pub fn align_pos_to_next_char(&self, offset: usize) -> usize {
@@ -701,7 +931,7 @@ impl Buffer {
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
-        reason = "The invariant makes it safe"
+        reason = "Safe by invariant"
     )]
     pub fn as_str_from(&self, pos: usize) -> io::Result<&str> {
         let start = self.align_pos_to_next_char(pos);
@@ -727,48 +957,40 @@ impl Buffer {
 
     /// Fills the buffer while a predicate matches characters, growing as needed.
     ///
-    /// Reads from the reader and decodes UTF-8 characters, continuing as long as the predicate
-    /// returns `true`. Stops when a character fails the predicate, EOF is reached, or the
-    /// maximum capacity ([`PRACTICAL_MAX_SIZE`]) is reached.
+    /// Reads and decodes UTF-8 characters, continuing while the predicate returns `true`. Stops
+    /// when a non-matching character is found, EOF is reached, or the capacity limit is hit.
     ///
-    /// The buffer automatically grows to accommodate matching data.
+    /// The returned byte count is relative to the first complete UTF-8 character at or after
+    /// `pos()`. The buffer may contain more data than the count indicates, since reads occur in
+    /// chunks.
     ///
-    /// # Return Value
-    ///
-    /// Returns the number of **valid UTF-8 bytes** that matched the predicate, excluding any
-    /// partial UTF-8 sequences at the start boundary (e.g., if `pos()` is not on a character
-    /// boundary). To use this as an index from [`pos()`](Self::pos), you must first align the
-    /// position with [`align_pos_to_next_char()`](Self::align_pos_to_next_char).
-    ///
-    /// Note that the buffer may contain significantly more data than this count, since reads
-    /// occur in chunks and may include data beyond where the predicate first fails.
+    /// The buffer may grow eagerly beyond what is filled. Call [`shrink()`](Self::shrink) after
+    /// reading is complete if you need to reclaim unused capacity.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::buffer::{Buffer, GrowingFillResult};
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// let mut reader = Cursor::new("aaaaaHello");
-    /// let count = buffer.fill_while(&mut reader, |c| c == 'a').unwrap();
-    /// assert_eq!(count, 5);  // Five 'a' characters matched
+    /// let result = buffer.fill_while(&mut reader, |c| c == 'a', None).unwrap();
+    /// assert!(matches!(result, GrowingFillResult::Complete(5)));  // Five 'a' characters matched
     /// assert_eq!(buffer.len(), 10);  // But entire string was read
     /// ```
     ///
     /// # Errors
     ///
     /// Returns any I/O errors encountered while reading, or UTF-8 validation errors.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "The invariant makes it safe"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
     pub fn fill_while<P: Fn(char) -> bool>(
         &mut self,
         mut reader: impl Read,
         predicate: P,
-    ) -> io::Result<usize> {
-        // Get the initial capacity so we don't shrink below it
-        let initial_capacity = self.cap;
+        max_capacity: Option<usize>,
+    ) -> io::Result<GrowingFillResult> {
+        // Get the maximum capacity so we don't grow beyond it
+        let max_capacity = max_capacity.unwrap_or(PRACTICAL_MAX_SIZE);
         // Get pos aligned to the next char, this is where we start checking against the predicate
         let mut check_pos = self.align_pos_to_next_char(self.pos);
         // The number of valid bytes read
@@ -777,21 +999,18 @@ impl Buffer {
         loop {
             // If the buffer is currently full then start by growing it
             if self.len == self.cap {
-                self.grow();
+                if self.cap < max_capacity {
+                    self.grow();
+                } else {
+                    return Ok(GrowingFillResult::Capped(total_valid_read));
+                }
             }
 
-            let read = match self.fill(&mut reader) {
-                Ok(r) => r,
-                Err(e) => {
-                    // Shrink back down on errors, since we grow eagerly.
-                    self.shrink_targeted(Some(initial_capacity));
-                    return Err(e);
-                }
-            };
+            let read = self.fill(&mut reader)?.count();
 
             // EOF detection
             if read == 0 {
-                break;
+                return Ok(GrowingFillResult::Eof(total_valid_read));
             }
 
             // Get the new part
@@ -801,7 +1020,7 @@ impl Buffer {
             if let Some((byte_index, _)) = string.char_indices().find(|(_, c)| !predicate(*c)) {
                 // Add the number of valid bytes until the predicate breaks to the total valid bytes
                 // read so far and return it.
-                return Ok(total_valid_read + byte_index);
+                return Ok(GrowingFillResult::Complete(total_valid_read + byte_index));
             }
 
             // All read characters are valid
@@ -811,1132 +1030,71 @@ impl Buffer {
             // This way any partial chars at the end of the buffer are parsed in the next iteration
             check_pos += string.len();
         }
-
-        // Shrink in case we were overeager with our growth.
-        self.shrink_targeted(Some(initial_capacity));
-
-        Ok(total_valid_read)
     }
 
     /// Fills the buffer until a delimiter character is found, growing as needed.
     ///
-    /// Reads from the reader until the specified delimiter character is encountered. Stops when
-    /// the delimiter is found, EOF is reached, or the maximum capacity ([`PRACTICAL_MAX_SIZE`])
-    /// is reached.
+    /// Reads until the delimiter is found, EOF is reached, or the capacity limit is hit. The
+    /// returned byte count **includes the delimiter** if found, and is relative to the first
+    /// complete UTF-8 character at or after `pos()`. The buffer may contain more data than the
+    /// count indicates, since reads occur in chunks.
     ///
-    /// The buffer automatically grows to accommodate the data.
-    ///
-    /// # Return Value
-    ///
-    /// Returns the number of **valid UTF-8 bytes** **including the delimiter** if found,
-    /// excluding any partial UTF-8 sequences at the start boundary (e.g., if `pos()` is not on
-    /// a character boundary). To use this as an index from [`pos()`](Self::pos), you must first
-    /// align the position with [`align_pos_to_next_char()`](Self::align_pos_to_next_char).
-    ///
-    /// Note that the buffer may contain significantly more data than this count, since reads
-    /// occur in chunks and may include data beyond the delimiter.
+    /// The buffer may grow eagerly beyond what is filled. Call [`shrink()`](Self::shrink) after
+    /// reading is complete if you need to reclaim unused capacity.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::buffer::{Buffer, GrowingFillResult};
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// let mut reader = Cursor::new("Hello\nWorld");
-    /// let count = buffer.fill_until(&mut reader, '\n').unwrap();
-    /// assert_eq!(count, 6);  // "Hello\n" (includes delimiter)
+    /// let result = buffer.fill_until(&mut reader, '\n', None).unwrap();
+    /// assert!(matches!(result, GrowingFillResult::Complete(6)));  // "Hello\n" (includes delimiter)
     /// assert_eq!(buffer.as_str().unwrap(), "Hello\nWorld");
     /// ```
     ///
     /// # Errors
     ///
     /// Returns any I/O errors encountered while reading, or UTF-8 validation errors.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "The invariant makes it safe"
-    )]
-    pub fn fill_until(&mut self, reader: impl Read, delimiter: char) -> io::Result<usize> {
-        let valid_count = self.fill_while(reader, |c| c != delimiter)?;
-
-        // Check if we stopped at the delimiter (not EOF)
-        // Align to the char boundary first
-        let check_start = self.align_pos_to_next_char(self.pos);
-        let string = &self.as_str_from(check_start + valid_count)?;
-        if let Some(ch) = string.chars().next() {
-            if ch == delimiter {
-                // Include the delimiter
-                return Ok(valid_count + ch.len_utf8());
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
+    pub fn fill_until(
+        &mut self,
+        reader: impl Read,
+        delimiter: char,
+        max_capacity: Option<usize>,
+    ) -> io::Result<GrowingFillResult> {
+        match self.fill_while(reader, |c| c != delimiter, max_capacity)? {
+            GrowingFillResult::Complete(valid_count) => {
+                // Found the delimiter, include it in the count
+                Ok(GrowingFillResult::Complete(
+                    valid_count + delimiter.len_utf8(),
+                ))
             }
+            result => Ok(result), // Eof or Capped - pass through unchanged
         }
-
-        // Hit EOF before finding delimiter
-        Ok(valid_count)
     }
-}
 
-impl Default for Buffer {
-    fn default() -> Self {
-        Self::new()
+    /// Test helper to inject data directly into the buffer.
+    ///
+    /// This bypasses the normal fill operations and directly sets buffer contents,
+    /// useful for testing specific buffer states.
+    ///
+    /// # Safety
+    ///
+    /// This is only available in test builds and should only be used in tests.
+    /// It does not validate that the invariants are maintained.
+    #[cfg(test)]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Used in tests only, so it being unsafe is fine"
+    )]
+    pub fn inject_test_data(&mut self, data: &[u8]) {
+        self.buf[..data.len()].copy_from_slice(data);
+        self.len = data.len();
+        self.pos = 0;
     }
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "Okay in tests"
-)]
-mod tests {
-    use std::io::Cursor;
-
-    use crate::constants::CHUNK_SIZE;
-
-    use super::*;
-
-    #[test]
-    fn test_create_new() {
-        let buffer = Buffer::new();
-
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.len(), 0);
-        assert_eq!(buffer.pos(), 0);
-    }
-
-    #[test]
-    fn test_create_default() {
-        let buffer = Buffer::default();
-
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.len(), 0);
-        assert_eq!(buffer.pos(), 0);
-    }
-
-    #[test]
-    fn test_create_with_capacity() {
-        let buffer = Buffer::with_capacity(2 * CHUNK_SIZE - 1);
-
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-        assert_eq!(buffer.len(), 0);
-        assert_eq!(buffer.pos(), 0);
-    }
-
-    #[test]
-    fn test_buf() {
-        let mut buffer = Buffer::new();
-
-        // Empty buffer returns empty slice
-        assert_eq!(buffer.buf(), &[]);
-
-        // Inject some data
-        buffer.buf[0..5].copy_from_slice(b"Hello");
-        buffer.len = 5;
-
-        // Now buf() returns the data
-        assert_eq!(buffer.buf(), b"Hello");
-    }
-
-    #[test]
-    fn test_cap() {
-        let mut buffer = Buffer::new();
-
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-
-        // Simulate a bigger capacity
-        buffer.cap = 2 * CHUNK_SIZE;
-
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_len() {
-        let mut buffer = Buffer::new();
-
-        assert_eq!(buffer.len(), 0);
-
-        // Simulate existing data.
-        buffer.len = 50;
-
-        assert_eq!(buffer.len(), 50);
-    }
-
-    #[test]
-    fn test_pos() {
-        let mut buffer = Buffer::new();
-
-        assert_eq!(buffer.pos(), 0);
-
-        // Simulate consumed data.
-        buffer.pos = 50;
-
-        // technically the invariant is now broken, but it doesn't matter for the test
-        assert_eq!(buffer.pos(), 50);
-    }
-
-    #[test]
-    fn test_is_empty() {
-        let mut buffer = Buffer::new();
-
-        assert!(buffer.is_empty());
-
-        // Simulate existing data.
-        buffer.len = 50;
-
-        assert!(!buffer.is_empty());
-    }
-
-    #[test]
-    fn test_discard() {
-        let mut buffer = Buffer::new();
-
-        // Simulate there being data.
-        buffer.pos = 10;
-        buffer.len = 100;
-
-        // Discard current data.
-        buffer.discard();
-
-        // Buffer should be blank now.
-        assert_eq!(buffer.len, 0);
-        assert_eq!(buffer.pos, 0);
-    }
-
-    #[test]
-    fn test_consume() {
-        let mut buffer = Buffer::new();
-
-        // Consume nothing or try to consume on empty
-        buffer.consume(0);
-        buffer.consume(10);
-
-        // Should still be empty
-        assert_eq!(buffer.len, 0);
-        assert_eq!(buffer.pos, 0);
-
-        // Simulate there being data
-        buffer.len = 100;
-
-        // Consume some bytes
-        buffer.consume(10);
-
-        // Buffer state should match
-        assert_eq!(buffer.len, 100);
-        assert_eq!(buffer.pos, 10);
-
-        // Consume the remaining bytes
-        buffer.consume(90);
-
-        // Buffer state should match
-        assert_eq!(buffer.len, 100);
-        assert_eq!(buffer.pos, 100);
-
-        // Simulate there being more data
-        buffer.len = 150;
-
-        // Consume more bytes than there are
-        buffer.consume(100);
-
-        // Buffer state should match
-        assert_eq!(buffer.len, 150);
-        assert_eq!(buffer.pos, 150);
-    }
-
-    #[test]
-    fn test_compact() {
-        let mut buffer = Buffer::new();
-
-        // Compact should be a no-op
-        buffer.compact();
-
-        assert_eq!(buffer.len, 0);
-        assert_eq!(buffer.pos, 0);
-
-        // Simulate there being data.
-        buffer.pos = 10;
-        buffer.len = 100;
-
-        // Compact the data.
-        buffer.compact();
-
-        // Buffer state should match
-        assert_eq!(buffer.len, 90);
-        assert_eq!(buffer.pos, 0);
-
-        // Simulate all data being consumed (pos == len)
-        buffer.pos = 90;
-
-        // Compact the data
-        buffer.compact();
-
-        // Should result in empty buffer
-        assert_eq!(buffer.len, 0);
-        assert_eq!(buffer.pos, 0);
-    }
-
-    #[test]
-    fn test_cap_down() {
-        assert_eq!(Buffer::cap_down(0), CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(CHUNK_SIZE - 1), CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(CHUNK_SIZE), CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(CHUNK_SIZE + 1), CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(2 * CHUNK_SIZE + 1), 2 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(2 * CHUNK_SIZE), 2 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(8 * CHUNK_SIZE + 1), 8 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(32 * CHUNK_SIZE + 1), 32 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(128 * CHUNK_SIZE + 1), 128 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_down(usize::MAX), PRACTICAL_MAX_SIZE);
-    }
-
-    #[test]
-    fn test_cap_up() {
-        assert_eq!(Buffer::cap_up(0), CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(CHUNK_SIZE - 1), CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(CHUNK_SIZE), CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(CHUNK_SIZE + 1), 2 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(2 * CHUNK_SIZE - 1), 2 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(2 * CHUNK_SIZE), 2 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(8 * CHUNK_SIZE - 1), 8 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(32 * CHUNK_SIZE - 1), 32 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(128 * CHUNK_SIZE - 1), 128 * CHUNK_SIZE);
-        assert_eq!(Buffer::cap_up(usize::MAX), PRACTICAL_MAX_SIZE);
-    }
-
-    #[test]
-    fn test_grow() {
-        let mut buffer = Buffer::new();
-
-        buffer.grow();
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.grow();
-        assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.grow();
-        assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.grow();
-        assert_eq!(buffer.cap(), 16 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.grow();
-        assert_eq!(buffer.cap(), 32 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_shrink() {
-        let mut buffer = Buffer::with_capacity(32 * CHUNK_SIZE);
-
-        buffer.len = 15 * CHUNK_SIZE + 1;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), 16 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.len = 7 * CHUNK_SIZE + 1;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.len = 6 * CHUNK_SIZE - 1;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), 6 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.len = 3 * CHUNK_SIZE + 1;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.len = 2 * CHUNK_SIZE + 1;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), 3 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.len = 2 * CHUNK_SIZE;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.len = CHUNK_SIZE;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-
-        buffer.len = 0;
-        buffer.shrink();
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert!(buffer.buf.capacity() >= buffer.cap());
-        assert!(buffer.buf.capacity() <= buffer.cap() + CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, World!";
-
-        let remainder = CHUNK_SIZE % data.len();
-        let fills = CHUNK_SIZE / data.len();
-
-        assert!(remainder > 0);
-
-        // Repeatedly fill the buffer until it's almost full
-        for n in 1..=fills {
-            let cur = Cursor::new(data);
-            let read = buffer.fill(cur).unwrap();
-            let pos = buffer.pos();
-            let read_data = &buffer.buf()[pos..pos + read];
-
-            assert_eq!(read_data, data.as_bytes());
-            assert_eq!(pos + read, n * data.len());
-
-            buffer.consume(read);
-        }
-
-        // Fill the last bit of space
-        let cur = Cursor::new(data);
-        let read = buffer.fill(cur).unwrap();
-        let pos = buffer.pos();
-        let read_data = &buffer.buf()[pos..pos + read];
-        let source_data = &data.as_bytes()[..remainder];
-
-        assert_eq!(read_data, source_data);
-        assert_eq!(buffer.len(), CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_amount() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, World!";
-
-        let amount = 3 * CHUNK_SIZE;
-        let remainder = amount % data.len();
-        let fills = amount / data.len();
-
-        assert!(remainder > 0);
-
-        let repeated = data.repeat(fills + 1);
-        let cur = Cursor::new(repeated);
-
-        // Fill the requested amount
-        let total_read = buffer.fill_amount(cur, amount).unwrap();
-
-        assert!(total_read >= amount);
-        assert!(buffer.len() >= amount);
-        assert!(buffer.cap() >= amount);
-
-        // Verify the data is correct
-        for _ in 0..fills {
-            let pos = buffer.pos();
-            let read_data = &buffer.buf()[pos..pos + data.len()];
-
-            assert_eq!(read_data, data.as_bytes());
-
-            buffer.consume(data.len());
-        }
-
-        // Verify the last bit of data
-        let pos = buffer.pos();
-        let read_data = &buffer.buf()[pos..pos + remainder];
-        let source_data = &data.as_bytes()[..remainder];
-
-        assert_eq!(read_data, source_data);
-    }
-
-    #[test]
-    fn test_as_str_valid_ascii() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, World!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_as_str_valid_multibyte() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, 世界!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_as_str_partial_utf8_at_start() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, 世界!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // Use as_str_from with offset in the middle of "世" (3-byte UTF-8 character)
-        let result = buffer.as_str_from(8).unwrap();
-        assert_eq!(result, "界!");
-    }
-
-    #[test]
-    fn test_as_str_partial_utf8_at_end() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, 世界";
-        let bytes = data.as_bytes();
-        let truncated = bytes.len() - 1;
-        let cur = Cursor::new(&bytes[0..truncated]);
-        buffer.fill(cur).unwrap();
-        let result = buffer.as_str().unwrap();
-        assert_eq!(result, "Hello, 世");
-    }
-
-    #[test]
-    fn test_as_str_invalid_utf8_middle() {
-        let mut buffer = Buffer::new();
-        buffer.buf[0..5].copy_from_slice(b"Hello");
-        // Continuation byte without start
-        buffer.buf[5] = 0b1000_0000;
-        buffer.buf[6..12].copy_from_slice(b"World!");
-        buffer.len = 12;
-        assert!(buffer.as_str().is_err());
-    }
-
-    #[test]
-    fn test_as_str_empty() {
-        let buffer = Buffer::new();
-        assert_eq!(buffer.as_str().unwrap(), "");
-    }
-
-    #[test]
-    fn test_as_str_all_consumed() {
-        let mut buffer = Buffer::new();
-        let data = "Hello";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // Use as_str_from with offset at the end
-        let result = buffer.as_str_from(5).unwrap();
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_align_pos_to_char_on_char_boundary() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, 世界!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // Position 7 is on a character boundary (start of '世')
-        let aligned = buffer.align_pos_to_char(7);
-        assert_eq!(aligned, 7);
-    }
-
-    #[test]
-    fn test_align_pos_to_char_middle_of_multibyte() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, 世界!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // "Hello, " = 7 bytes, '世' is 3 bytes (7-9), '界' is 3 bytes (10-12)
-        // Position 8 is in the middle of '世', should align to start of '世' at 7
-        let aligned = buffer.align_pos_to_char(8);
-        assert_eq!(aligned, 7);
-    }
-
-    #[test]
-    fn test_align_pos_to_char_beyond_len() {
-        let mut buffer = Buffer::new();
-        let data = "Hello";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // Position beyond len should clamp to len
-        let aligned = buffer.align_pos_to_char(100);
-        assert_eq!(aligned, 5);
-    }
-
-    #[test]
-    fn test_align_pos_to_char_before_pos() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, World!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        buffer.consume(5);
-        // Trying to align before current pos should clamp to pos
-        let aligned = buffer.align_pos_to_char(2);
-        assert_eq!(aligned, 5);
-    }
-
-    #[test]
-    fn test_align_pos_to_next_char_on_char_boundary() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, 世界!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // Position 7 is on a character boundary (start of '世')
-        let aligned = buffer.align_pos_to_next_char(7);
-        assert_eq!(aligned, 7);
-    }
-
-    #[test]
-    fn test_align_pos_to_next_char_middle_of_multibyte() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, 世界!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // "Hello, " = 7 bytes, '世' is 3 bytes (7-9), '界' is 3 bytes (10-12)
-        // Position 8 is in the middle of '世', should align to start of '界' at 10
-        let aligned = buffer.align_pos_to_next_char(8);
-        assert_eq!(aligned, 10);
-    }
-
-    #[test]
-    fn test_align_pos_to_next_char_beyond_len() {
-        let mut buffer = Buffer::new();
-        let data = "Hello";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        // Position beyond len should clamp to len
-        let aligned = buffer.align_pos_to_next_char(100);
-        assert_eq!(aligned, 5);
-    }
-
-    #[test]
-    fn test_align_pos_to_next_char_before_pos() {
-        let mut buffer = Buffer::new();
-        let data = "Hello, World!";
-        let cur = Cursor::new(data);
-        buffer.fill(cur).unwrap();
-        buffer.consume(5);
-        // Trying to align before current pos should clamp to pos
-        let aligned = buffer.align_pos_to_next_char(2);
-        assert_eq!(aligned, 5);
-    }
-
-    #[test]
-    fn test_fill_while_basic() {
-        let mut buffer = Buffer::new();
-        let data = "aaaaaHello";
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
-
-        assert_eq!(read, 5);
-        assert_eq!(buffer.len(), data.len());
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_fill_while_all_match() {
-        let mut buffer = Buffer::new();
-        let data = "aaaaaaaaa";
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
-
-        assert_eq!(read, data.len());
-        assert_eq!(buffer.len(), data.len());
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_fill_while_multibyte_chars() {
-        let mut buffer = Buffer::new();
-        let data = "世界世界ABC";
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_while(cur, |c| c == '世' || c == '界').unwrap();
-
-        // Should read 4 chars * 3 bytes each = 12 bytes
-        assert_eq!(read, 12);
-        assert_eq!(buffer.len(), data.len());
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_fill_while_chunk_boundary() {
-        let mut buffer = Buffer::new();
-
-        // Create text that breaks exactly at CHUNK_SIZE
-        let prefix = "a".repeat(CHUNK_SIZE);
-        let data = format!("{prefix}b");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
-
-        assert_eq!(read, CHUNK_SIZE);
-        assert_eq!(buffer.len(), CHUNK_SIZE + 1);
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_while_chunk_boundary_plus_one() {
-        let mut buffer = Buffer::new();
-
-        // Create text that breaks at CHUNK_SIZE + 1
-        let prefix = "a".repeat(CHUNK_SIZE + 1);
-        let data = format!("{prefix}b");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
-
-        assert_eq!(read, CHUNK_SIZE + 1);
-        assert_eq!(buffer.len(), CHUNK_SIZE + 2);
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_while_multibyte_char_at_chunk_boundary() {
-        let mut buffer = Buffer::new();
-
-        // Create text where a multibyte char starts right at CHUNK_SIZE
-        let prefix = "a".repeat(CHUNK_SIZE);
-        let data = format!("{prefix}世b");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_while(cur, |c| c == 'a' || c == '世').unwrap();
-
-        // Should read CHUNK_SIZE 'a's + 1 '世' (3 bytes)
-        assert_eq!(read, CHUNK_SIZE + 3);
-        assert_eq!(buffer.len(), CHUNK_SIZE + 4); // + 'b'
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_while_multibyte_char_breaks_at_chunk_boundary() {
-        let mut buffer = Buffer::new();
-
-        // Create text where a multibyte char that breaks the predicate is split at CHUNK_SIZE
-        // The first byte of '世' will be at CHUNK_SIZE - 1, causing it to be split across reads
-        let prefix = "a".repeat(CHUNK_SIZE - 1);
-        let data = format!("{prefix}世");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_while(cur, |c| c == 'a').unwrap();
-
-        assert_eq!(read, CHUNK_SIZE - 1);
-        assert_eq!(buffer.len(), CHUNK_SIZE + 2); // CHUNK_SIZE - 1 + 3 bytes for '世'
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_while_with_existing_data() {
-        let mut buffer = Buffer::new();
-        let data1 = "aaaaa";
-        let cur1 = Cursor::new(data1);
-        buffer.fill(cur1).unwrap();
-        buffer.consume(2); // Consume 2 'a's
-
-        let data2 = "aaHello";
-        let cur2 = Cursor::new(data2);
-
-        // Should read from existing position
-        let read = buffer.fill_while(cur2, |c| c == 'a').unwrap();
-
-        // Should count the 3 remaining 'a's from first fill + 2 'a's from second fill = 5
-        assert_eq!(read, 5);
-        assert_eq!(buffer.as_str().unwrap(), "aaaaaHello");
-    }
-
-    #[test]
-    fn test_fill_until_basic() {
-        let mut buffer = Buffer::new();
-        let data = "Hello\nWorld";
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '\n').unwrap();
-
-        assert_eq!(read, 6); // "Hello\n"
-        assert_eq!(buffer.len(), data.len());
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_fill_until_not_found() {
-        let mut buffer = Buffer::new();
-        let data = "Hello World";
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '\n').unwrap();
-
-        assert_eq!(read, data.len());
-        assert_eq!(buffer.len(), data.len());
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_fill_until_multibyte_delimiter() {
-        let mut buffer = Buffer::new();
-        let data = "Hello世World";
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '世').unwrap();
-
-        // "Hello" (5 bytes) + "世" (3 bytes)
-        assert_eq!(read, 8);
-        assert_eq!(buffer.len(), data.len());
-        assert_eq!(buffer.cap(), CHUNK_SIZE);
-        assert_eq!(buffer.as_str().unwrap(), data);
-    }
-
-    #[test]
-    fn test_fill_until_chunk_boundary() {
-        let mut buffer = Buffer::new();
-
-        // Create text where delimiter is exactly at CHUNK_SIZE
-        let prefix = "a".repeat(CHUNK_SIZE);
-        let data = format!("{prefix}\n");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '\n').unwrap();
-
-        assert_eq!(read, CHUNK_SIZE + 1); // includes the newline
-        assert_eq!(buffer.len(), CHUNK_SIZE + 1);
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_until_chunk_boundary_plus_one() {
-        let mut buffer = Buffer::new();
-
-        // Create text where delimiter is at CHUNK_SIZE + 1
-        let prefix = "a".repeat(CHUNK_SIZE + 1);
-        let data = format!("{prefix}\n");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '\n').unwrap();
-
-        assert_eq!(read, CHUNK_SIZE + 2); // includes the newline
-        assert_eq!(buffer.len(), CHUNK_SIZE + 2);
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_until_multibyte_delimiter_at_chunk_boundary() {
-        let mut buffer = Buffer::new();
-
-        // Create text where multibyte delimiter starts at CHUNK_SIZE
-        let prefix = "a".repeat(CHUNK_SIZE);
-        let data = format!("{prefix}世");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '世').unwrap();
-
-        // CHUNK_SIZE 'a's + '世' (3 bytes)
-        assert_eq!(read, CHUNK_SIZE + 3);
-        assert_eq!(buffer.len(), CHUNK_SIZE + 3);
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_until_multibyte_delimiter_breaks_at_chunk_boundary() {
-        let mut buffer = Buffer::new();
-
-        // Create text where a multibyte delimiter is split at CHUNK_SIZE
-        // The first byte of '世' will be at CHUNK_SIZE - 1, causing it to be split across reads
-        let prefix = "a".repeat(CHUNK_SIZE - 1);
-        let data = format!("{prefix}世");
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '世').unwrap();
-
-        // CHUNK_SIZE - 1 'a's + '世' (3 bytes)
-        assert_eq!(read, CHUNK_SIZE - 1 + 3);
-        assert_eq!(buffer.len(), CHUNK_SIZE + 2); // CHUNK_SIZE - 1 + 3 bytes for '世'
-        assert_eq!(buffer.cap(), 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_until_with_existing_data() {
-        let mut buffer = Buffer::new();
-        let data1 = "Hello";
-        let cur1 = Cursor::new(data1);
-        buffer.fill(cur1).unwrap();
-        buffer.consume(2); // Consume "He"
-
-        let data2 = "llo\nWorld";
-        let cur2 = Cursor::new(data2);
-
-        // Should read from existing position and find delimiter
-        let read = buffer.fill_until(cur2, '\n').unwrap();
-
-        // Should count remaining "llo" (3) + new "llo\n" (4) = 7
-        assert_eq!(read, 7);
-        assert_eq!(buffer.as_str().unwrap(), "llollo\nWorld"); // spellchecker:ignore llollo
-    }
-
-    #[test]
-    fn test_fill_until_immediate_delimiter() {
-        let mut buffer = Buffer::new();
-        let data = "\nWorld";
-        let cur = Cursor::new(data);
-
-        let read = buffer.fill_until(cur, '\n').unwrap();
-
-        // Should find delimiter immediately
-        assert_eq!(read, 1);
-        assert_eq!(buffer.as_str().unwrap(), "\nWorld");
-    }
-
-    // Mock reader that returns an error after reading a specified number of bytes
-    struct ErrorReader {
-        data: Vec<u8>,
-        pos: usize,
-        error_at: usize,
-    }
-
-    impl ErrorReader {
-        fn new(data: Vec<u8>, error_at: usize) -> Self {
-            Self {
-                data,
-                pos: 0,
-                error_at,
-            }
-        }
-    }
-
-    impl Read for ErrorReader {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            if self.pos >= self.error_at {
-                return Err(io::Error::other("simulated read error"));
-            }
-
-            let remaining = self.data.len() - self.pos;
-            let to_read = cmp::min(buf.len(), remaining);
-            let to_read = cmp::min(to_read, self.error_at - self.pos);
-
-            if to_read == 0 {
-                return Ok(0);
-            }
-
-            buf[..to_read].copy_from_slice(&self.data[self.pos..self.pos + to_read]);
-            self.pos += to_read;
-            Ok(to_read)
-        }
-    }
-
-    #[test]
-    fn test_fill_error() {
-        let mut buffer = Buffer::new();
-        let data = b"Hello, World!".to_vec();
-        let mut reader = ErrorReader::new(data.clone(), 5);
-
-        // First read succeeds with 5 bytes
-        let result = buffer.fill(&mut reader);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 5);
-        assert_eq!(buffer.len(), 5);
-        assert_eq!(&buffer.buf()[..5], b"Hello");
-
-        // Second read should error
-        let result = buffer.fill(&mut reader);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 5); // Length unchanged after error
-    }
-
-    #[test]
-    fn test_fill_error_immediate() {
-        let mut buffer = Buffer::new();
-        let data = b"Hello, World!".to_vec();
-        let mut reader = ErrorReader::new(data, 0);
-
-        // Should error immediately
-        let result = buffer.fill(&mut reader);
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 0);
-    }
-
-    #[test]
-    fn test_fill_amount_error() {
-        let mut buffer = Buffer::new();
-        let data = b"Hello, World!".to_vec();
-        let mut reader = ErrorReader::new(data.clone(), 5);
-
-        // Request more than what we can read before error
-        let result = buffer.fill_amount(&mut reader, 100);
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 5);
-        assert_eq!(&buffer.buf()[..5], b"Hello");
-    }
-
-    #[test]
-    fn test_fill_amount_error_immediate() {
-        let mut buffer = Buffer::new();
-        let data = b"Hello, World!".to_vec();
-        let mut reader = ErrorReader::new(data, 0);
-
-        // Should error immediately
-        let result = buffer.fill_amount(&mut reader, 100);
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 0);
-    }
-
-    #[test]
-    fn test_fill_amount_error_after_growth() {
-        let mut buffer = Buffer::new();
-        let data = "a".repeat(2 * CHUNK_SIZE);
-        let error_at = CHUNK_SIZE + 10;
-        let mut reader = ErrorReader::new(data.into_bytes(), error_at);
-
-        // Request enough to trigger growth, then error
-        let result = buffer.fill_amount(&mut reader, 2 * CHUNK_SIZE);
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), error_at);
-    }
-
-    #[test]
-    fn test_fill_while_error() {
-        let mut buffer = Buffer::new();
-        let data = "aaaaaHello".to_string();
-        let mut reader = ErrorReader::new(data.into_bytes(), 3);
-
-        // Should read 3 bytes then error
-        let result = buffer.fill_while(&mut reader, |c| c == 'a');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 3);
-        assert_eq!(buffer.as_str().unwrap(), "aaa");
-    }
-
-    #[test]
-    fn test_fill_while_error_immediate() {
-        let mut buffer = Buffer::new();
-        let data = "aaaaaHello".to_string();
-        let mut reader = ErrorReader::new(data.into_bytes(), 0);
-
-        // Should error immediately
-        let result = buffer.fill_while(&mut reader, |c| c == 'a');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 0);
-    }
-
-    #[test]
-    fn test_fill_while_error_across_chunk_boundary() {
-        let mut buffer = Buffer::new();
-        let prefix = "a".repeat(CHUNK_SIZE + 10);
-        let data = format!("{prefix}b");
-        let error_at = CHUNK_SIZE + 5;
-        let mut reader = ErrorReader::new(data.into_bytes(), error_at);
-
-        // Should read past chunk boundary then error
-        let result = buffer.fill_while(&mut reader, |c| c == 'a');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), error_at);
-        assert!(buffer.cap() >= 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_while_error_before_predicate_breaks() {
-        let mut buffer = Buffer::new();
-        let data = "aaaaaHello".to_string();
-        let mut reader = ErrorReader::new(data.into_bytes(), 5);
-
-        // Should read 5 'a's (matching predicate), then error on next read
-        let result = buffer.fill_while(&mut reader, |c| c == 'a');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 5);
-        assert_eq!(buffer.as_str().unwrap(), "aaaaa");
-    }
-
-    #[test]
-    fn test_fill_until_error() {
-        let mut buffer = Buffer::new();
-        let data = "Hello\nWorld".to_string();
-        let mut reader = ErrorReader::new(data.into_bytes(), 3);
-
-        // Should read 3 bytes then error
-        let result = buffer.fill_until(&mut reader, '\n');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 3);
-        assert_eq!(buffer.as_str().unwrap(), "Hel");
-    }
-
-    #[test]
-    fn test_fill_until_error_immediate() {
-        let mut buffer = Buffer::new();
-        let data = "Hello\nWorld".to_string();
-        let mut reader = ErrorReader::new(data.into_bytes(), 0);
-
-        // Should error immediately
-        let result = buffer.fill_until(&mut reader, '\n');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 0);
-    }
-
-    #[test]
-    fn test_fill_until_error_before_delimiter() {
-        let mut buffer = Buffer::new();
-        let data = "Hello\nWorld".to_string();
-        let mut reader = ErrorReader::new(data.into_bytes(), 5);
-
-        // Should read 5 bytes (before '\n'), then error
-        let result = buffer.fill_until(&mut reader, '\n');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 5);
-        assert_eq!(buffer.as_str().unwrap(), "Hello");
-    }
-
-    #[test]
-    fn test_fill_until_error_across_chunk_boundary() {
-        let mut buffer = Buffer::new();
-        let prefix = "a".repeat(CHUNK_SIZE + 10);
-        let data = format!("{prefix}\n");
-        let error_at = CHUNK_SIZE + 5;
-        let mut reader = ErrorReader::new(data.into_bytes(), error_at);
-
-        // Should read past chunk boundary then error
-        let result = buffer.fill_until(&mut reader, '\n');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), error_at);
-        assert!(buffer.cap() >= 2 * CHUNK_SIZE);
-    }
-
-    #[test]
-    fn test_fill_until_error_with_multibyte_delimiter() {
-        let mut buffer = Buffer::new();
-        let data = "Hello世World".to_string();
-        let mut reader = ErrorReader::new(data.into_bytes(), 7);
-
-        // Should read 7 bytes (before '世'), then error
-        let result = buffer.fill_until(&mut reader, '世');
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(buffer.len(), 7);
-        assert_eq!(buffer.as_str().unwrap(), "Hello");
-    }
-}
+mod tests;

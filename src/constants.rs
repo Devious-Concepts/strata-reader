@@ -18,7 +18,7 @@
 //! - `DEFAULT_MAX_SIZE > CHUNK_SIZE` and is a power of 2 multiple of `CHUNK_SIZE`
 //! - `PRACTICAL_MAX_SIZE > DEFAULT_MAX_SIZE` and is a power of 2 multiple of `CHUNK_SIZE`
 //!
-//! This invariant ensure that all buffer allocations align properly and that the size hierarchy
+//! These invariants ensure that all buffer allocations align properly and that the size hierarchy
 //! remains consistent across the system.
 
 /// Buffer chunk size (8 KiB) used for dynamic buffer allocation.
@@ -49,8 +49,6 @@ pub const DEFAULT_MAX_SIZE: usize =
 /// against unreasonable user input. Its value is the largest power of two multiple of
 /// [`CHUNK_SIZE`] that fits in usize, representing the theoretical maximum reachable through
 /// exponential growth.
-///
-/// # Safety
 ///
 /// While this is a massive number, it won't overflow as it resolves to `usize::MAX / 2 + 1` just
 /// expressed in terms of `CHUNK_SIZE`.
