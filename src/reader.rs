@@ -80,8 +80,8 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             // Clear all data in the internal buffer
             self.buffer.clear();
 
-            /* Let the inner reader take things from here.
-            Reading into the target buffer directly. */
+            // Let the inner reader take things from here
+            // Reading into the target buffer directly
             return self.reader.read(buffer);
         }
 
@@ -104,7 +104,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         if self.buffer.pos() >= self.buffer.len() && total_length >= self.buffer.cap() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
             // If we've consumed the entire buffer and the total length of the target buffers is
-            // larger than the current buffer size, then defer to the inner reader.
+            // larger than the current buffer size, then defer to the inner reader
 
             // Discard all data in the internal buffer
             self.buffer.clear();
@@ -126,7 +126,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
     }
 
     // Like BufReader, we can also delegate to the internal reader after clearing our buffer as the
-    // internal buffer might have a more efficient method to `read_to_end`.
+    // internal buffer might have a more efficient method to `read_to_end`
     #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
     #[expect(clippy::arithmetic_side_effects, reason = "Would OOM before overflow")]
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -149,7 +149,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         if buf.is_empty() {
-            // Here be dragons, don't poke them.
+            // Here be dragons, don't poke them
             #[expect(unsafe_code, reason = "Exactly what BufReader does")]
             {
                 struct Guard<'a> {
@@ -245,15 +245,16 @@ impl<R: Read + ?Sized> BufRead for Reader<R> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if self.buffer.pos() >= self.buffer.len() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
-            // We've consumed all the data we have.
+            // We've consumed all the data we have
 
-            // Clear the buffer.
+            // Clear the buffer
             self.buffer.clear();
 
-            // Fill the buffer again.
+            // Fill the buffer again
             let _ = self.buffer.fill(&mut self.reader)?;
         }
 
+        // Return the unconsumed data we have
         Ok(&self.buffer.buf()[self.buffer.pos()..])
     }
 

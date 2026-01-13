@@ -250,10 +250,36 @@ fn test_reader_read_exact() {
 // impl BufRead
 // -----------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
-// TODO
-// -----------------------------------------------------------------------------
+#[test]
+fn test_reader_bufread_fill_buf() {
+    // Create a reader against some data
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
 
-// -----------------------------------------------------------------------------
-// TODO
-// -----------------------------------------------------------------------------
+    // We should get all of the data
+    assert_eq!(reader.buffer.len(), 0); // Buffer is empty at first
+    let read = reader.fill_buf().unwrap();
+    assert_eq!(read, data.as_bytes());
+    assert_eq!(reader.buffer.len(), data.len()); // Buffer has all the data after
+
+    // Reading again should give the already read data
+    let read = reader.fill_buf().unwrap();
+    assert_eq!(read, data.as_bytes());
+
+    // Consume a bit and read again, we should get the unconsumed bit
+    reader.consume(7);
+    let read = reader.fill_buf().unwrap();
+    assert_eq!(read, &data.as_bytes()[7..]);
+    assert_eq!(reader.buffer.len(), data.len()); // The buffer hasn't changed yet
+
+    // Reading after all data is consumed should give nothing
+    reader.consume(data.len() - 7);
+    let read = reader.fill_buf().unwrap();
+    assert_eq!(read, &[]);
+}
+
+/* Note: There is no test for `consume` as it's just a wrapper over `Buffer::consume()`
+ * So testing is deferred to the buffers tests
+ * There's no need to test this method twice after all
+ */
