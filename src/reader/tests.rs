@@ -32,15 +32,49 @@ fn test_reader_new() {
 }
 
 #[test]
-fn test_reader_with_max_capacity() {
+fn test_reader_with_config() {
+    // Create with max_capacity only (initial defaults)
     let cur: Cursor<&str> = Cursor::default();
     let max_capacity = CHUNK_SIZE + 123;
-    let reader = Reader::with_max_capacity(max_capacity, cur);
+    let reader = Reader::with_config(cur, None, Some(max_capacity));
 
     // Check internal state matches expectations
     assert_eq!(reader.buffer, Buffer::default());
     assert_eq!(reader.max_capacity, 2 * CHUNK_SIZE); // Rounds up
     assert_eq!(reader.reader, Cursor::default());
+
+    // Create with initial_capacity only (max defaults)
+    let cur: Cursor<&str> = Cursor::default();
+    let initial_capacity = 3 * CHUNK_SIZE;
+    let reader = Reader::with_config(cur, Some(initial_capacity), None);
+
+    // Check internal state matches expectations
+    assert_eq!(reader.buffer, Buffer::with_capacity(initial_capacity));
+    assert_eq!(reader.buffer.cap(), 3 * CHUNK_SIZE);
+    assert_eq!(reader.max_capacity, DEFAULT_MAX_SIZE);
+    assert_eq!(reader.reader, Cursor::default());
+
+    // Create with both initial_capacity and max_capacity
+    let cur: Cursor<&str> = Cursor::default();
+    let initial_capacity = 4 * CHUNK_SIZE;
+    let max_capacity = 8 * CHUNK_SIZE;
+    let reader = Reader::with_config(cur, Some(initial_capacity), Some(max_capacity));
+
+    // Check internal state matches expectations
+    assert_eq!(reader.buffer, Buffer::with_capacity(initial_capacity));
+    assert_eq!(reader.buffer.cap(), 4 * CHUNK_SIZE);
+    assert_eq!(reader.max_capacity, 8 * CHUNK_SIZE);
+    assert_eq!(reader.reader, Cursor::default());
+
+    // Create with max_capacity less than initial_capacity (max is raised to match)
+    let cur: Cursor<&str> = Cursor::default();
+    let initial_capacity = 8 * CHUNK_SIZE;
+    let max_capacity = 2 * CHUNK_SIZE;
+    let reader = Reader::with_config(cur, Some(initial_capacity), Some(max_capacity));
+
+    // Check internal state matches expectations
+    assert_eq!(reader.buffer.cap(), 8 * CHUNK_SIZE);
+    assert_eq!(reader.max_capacity, 8 * CHUNK_SIZE); // Raised to match initial
 }
 
 // -----------------------------------------------------------------------------
