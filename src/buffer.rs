@@ -7,35 +7,32 @@
 //! # Example
 //!
 //! ```
-//! use strata_reader::buffer::{Buffer, GrowingFillResult};
+//! use strata_reader::buffer::{Buffer, UnboundedFillResult};
+//! use strata_reader::constants::CHUNK_SIZE;
 //! use std::io::Cursor;
 //!
-//! let cur = Cursor::new("aaaa:bbbb");
+//! let data = vec![0u8; 3 * CHUNK_SIZE];
+//! let cur = Cursor::new(data);
 //! let mut buffer = Buffer::new();
 //!
-//! // Read until delimiter
-//! let result = buffer.fill_until(cur, ':', None).unwrap();
-//! assert!(matches!(result, GrowingFillResult::Complete(5))); // "aaaa:" (includes delimiter)
-//!
-//! // Access the read data
-//! assert_eq!(buffer.as_str().unwrap(), "aaaa:bbbb");
+//! // Read a specific amount
+//! let result = buffer.fill_amount(cur, 3 * CHUNK_SIZE, None).unwrap();
+//! assert!(matches!(result, UnboundedFillResult::Complete(_)));
 //!
 //! // Consume what we processed
-//! buffer.consume(result.count());
+//! buffer.consume(CHUNK_SIZE);
 //!
-//! // Process remaining data
-//! assert_eq!(buffer.as_str().unwrap(), "bbbb");
+//! // Check remaining data
+//! assert_eq!(buffer.len() - buffer.pos(), 2 * CHUNK_SIZE);
 //! ```
 
 use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
 use std::cmp;
 use std::io::{self, Read};
 
-/// Result type for the non-growing fill operations.
+/// Result type for bounded fill operations.
 ///
-/// This type is returned by [`fill`](Buffer::fill), which reads data into the buffer's
-/// current capacity without growing it. The operation is limited by the available space
-/// in the buffer's current allocation.
+/// Returned by operations that read within a known limit.
 ///
 /// The contained byte count represents the total bytes read from the reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,27 +65,14 @@ impl FillResult {
     }
 }
 
-/// Result type for growing fill operations.
+/// Result type for unbounded fill operations.
 ///
-/// This type is returned by [`fill_amount`](Buffer::fill_amount),
-/// [`fill_while`](Buffer::fill_while), and [`fill_until`](Buffer::fill_until). These operations
-/// dynamically grow the buffer to accommodate more data, but could hit a set maximum capacity
-/// before completing or reaching EOF.
+/// Returned by operations that read without a known limit.
 ///
-/// The contained byte count represents:
-/// - For [`fill_amount`](Buffer::fill_amount): Total bytes read from the reader
-/// - For [`fill_while`](Buffer::fill_while): Valid UTF-8 bytes matching the predicate
-/// - For [`fill_until`](Buffer::fill_until): Valid UTF-8 bytes up to and including the delimiter
-///
-/// Note that for `fill_while` and `fill_until`, the buffer may contain more data than the
-/// returned count since reads occur in chunks.
+/// The contained byte count represents the total bytes read from the reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrowingFillResult {
+pub enum UnboundedFillResult {
     /// The operation completed successfully.
-    ///
-    /// For [`fill_amount`](Buffer::fill_amount): The requested amount was read.
-    /// For [`fill_while`](Buffer::fill_while): A character not matching the predicate was found.
-    /// For [`fill_until`](Buffer::fill_until): The delimiter was found.
     ///
     /// Contains the byte count.
     Complete(usize),
@@ -107,16 +91,16 @@ pub enum GrowingFillResult {
     Capped(usize),
 }
 
-impl GrowingFillResult {
+impl UnboundedFillResult {
     /// Returns the byte count, regardless of completion status.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::GrowingFillResult;
-    /// assert_eq!(GrowingFillResult::Complete(42).count(), 42);
-    /// assert_eq!(GrowingFillResult::Eof(10).count(), 10);
-    /// assert_eq!(GrowingFillResult::Capped(100).count(), 100);
+    /// # use strata_reader::buffer::UnboundedFillResult;
+    /// assert_eq!(UnboundedFillResult::Complete(42).count(), 42);
+    /// assert_eq!(UnboundedFillResult::Eof(10).count(), 10);
+    /// assert_eq!(UnboundedFillResult::Capped(100).count(), 100);
     /// ```
     pub const fn count(&self) -> usize {
         match self {
@@ -125,11 +109,11 @@ impl GrowingFillResult {
     }
 }
 
-impl From<FillResult> for GrowingFillResult {
+impl From<FillResult> for UnboundedFillResult {
     fn from(result: FillResult) -> Self {
         match result {
-            FillResult::Complete(n) => GrowingFillResult::Complete(n),
-            FillResult::Eof(n) => GrowingFillResult::Eof(n),
+            FillResult::Complete(n) => UnboundedFillResult::Complete(n),
+            FillResult::Eof(n) => UnboundedFillResult::Eof(n),
         }
     }
 }
@@ -153,8 +137,6 @@ impl From<FillResult> for GrowingFillResult {
 ///
 /// # Use Cases
 ///
-/// - Tokenization and parsing (e.g., JSON decoding with [`fill_while`](Self::fill_while) and
-///   [`fill_until`](Self::fill_until))
 /// - Large file processing with dynamic memory needs
 /// - Stream buffering with arbitrary peek-ahead requirements
 /// - Any scenario requiring efficient buffered reads with automatic capacity adjustment
@@ -708,14 +690,14 @@ impl Buffer {
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::{Buffer, GrowingFillResult};
+    /// # use strata_reader::buffer::{Buffer, UnboundedFillResult};
     /// # use strata_reader::constants::CHUNK_SIZE;
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// let data = vec![0u8; 3 * CHUNK_SIZE];
     /// let mut reader = Cursor::new(data);
     /// let result = buffer.fill_amount(&mut reader, 3 * CHUNK_SIZE, None).unwrap();
-    /// assert!(matches!(result, GrowingFillResult::Complete(_)));
+    /// assert!(matches!(result, UnboundedFillResult::Complete(_)));
     /// assert!(result.count() >= 3 * CHUNK_SIZE);
     /// ```
     ///
@@ -732,7 +714,7 @@ impl Buffer {
         mut reader: impl Read,
         amt: usize,
         max_capacity: Option<usize>,
-    ) -> io::Result<GrowingFillResult> {
+    ) -> io::Result<UnboundedFillResult> {
         // Get the maximum capacity so we don't grow beyond it
         let max_capacity = max_capacity.unwrap_or(PRACTICAL_MAX_SIZE);
         // Capture starting capacity to use as shrink limit
@@ -764,7 +746,7 @@ impl Buffer {
                 debug_assert!(self.len == self.cap);
 
                 // We've filled the buffer to max capacity
-                return Ok(GrowingFillResult::Capped(total_bytes_read));
+                return Ok(UnboundedFillResult::Capped(total_bytes_read));
             }
 
             // Fill all available space
@@ -784,14 +766,14 @@ impl Buffer {
 
             if bytes_read == 0 {
                 // We've hit EOF
-                return Ok(GrowingFillResult::Eof(total_bytes_read));
+                return Ok(UnboundedFillResult::Eof(total_bytes_read));
             }
         }
 
         // Shrink in case we were overeager with our growth
         self.shrink_targeted(starting_capacity);
 
-        Ok(GrowingFillResult::Complete(total_bytes_read))
+        Ok(UnboundedFillResult::Complete(total_bytes_read))
     }
 
     /// Aligns a position backward to the start of the current UTF-8 character.
@@ -953,126 +935,6 @@ impl Buffer {
         }
 
         Ok("")
-    }
-
-    /// Fills the buffer while a predicate matches characters, growing as needed.
-    ///
-    /// Reads and decodes UTF-8 characters, continuing while the predicate returns `true`. Stops
-    /// when a non-matching character is found, EOF is reached, or the capacity limit is hit.
-    ///
-    /// The returned byte count is relative to the first complete UTF-8 character at or after
-    /// `pos()`. The buffer may contain more data than the count indicates, since reads occur in
-    /// chunks.
-    ///
-    /// The buffer may grow eagerly beyond what is filled. Call [`shrink()`](Self::shrink) after
-    /// reading is complete if you need to reclaim unused capacity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use strata_reader::buffer::{Buffer, GrowingFillResult};
-    /// # use std::io::Cursor;
-    /// let mut buffer = Buffer::new();
-    /// let mut reader = Cursor::new("aaaaaHello");
-    /// let result = buffer.fill_while(&mut reader, |c| c == 'a', None).unwrap();
-    /// assert!(matches!(result, GrowingFillResult::Complete(5)));  // Five 'a' characters matched
-    /// assert_eq!(buffer.len(), 10);  // But entire string was read
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns any I/O errors encountered while reading, or UTF-8 validation errors.
-    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
-    pub fn fill_while<P: Fn(char) -> bool>(
-        &mut self,
-        mut reader: impl Read,
-        predicate: P,
-        max_capacity: Option<usize>,
-    ) -> io::Result<GrowingFillResult> {
-        // Get the maximum capacity so we don't grow beyond it
-        let max_capacity = max_capacity.unwrap_or(PRACTICAL_MAX_SIZE);
-        // Get pos aligned to the next char, this is where we start checking against the predicate
-        let mut check_pos = self.align_pos_to_next_char(self.pos);
-        // The number of valid bytes read
-        let mut total_valid_read = 0;
-
-        loop {
-            // If the buffer is currently full then start by growing it
-            if self.len == self.cap {
-                if self.cap < max_capacity {
-                    self.grow();
-                } else {
-                    return Ok(GrowingFillResult::Capped(total_valid_read));
-                }
-            }
-
-            let read = self.fill(&mut reader)?.count();
-
-            // EOF detection
-            if read == 0 {
-                return Ok(GrowingFillResult::Eof(total_valid_read));
-            }
-
-            // Get the new part
-            let string = &self.as_str_from(check_pos)?;
-
-            // Look for a non-matching char
-            if let Some((byte_index, _)) = string.char_indices().find(|(_, c)| !predicate(*c)) {
-                // Add the number of valid bytes until the predicate breaks to the total valid bytes
-                // read so far and return it.
-                return Ok(GrowingFillResult::Complete(total_valid_read + byte_index));
-            }
-
-            // All read characters are valid
-            // Some boundary bytes may slip into the next iteration and be counted there
-            total_valid_read += string.len();
-            // Likewise, update the check position to the last valid full char
-            // This way any partial chars at the end of the buffer are parsed in the next iteration
-            check_pos += string.len();
-        }
-    }
-
-    /// Fills the buffer until a delimiter character is found, growing as needed.
-    ///
-    /// Reads until the delimiter is found, EOF is reached, or the capacity limit is hit. The
-    /// returned byte count **includes the delimiter** if found, and is relative to the first
-    /// complete UTF-8 character at or after `pos()`. The buffer may contain more data than the
-    /// count indicates, since reads occur in chunks.
-    ///
-    /// The buffer may grow eagerly beyond what is filled. Call [`shrink()`](Self::shrink) after
-    /// reading is complete if you need to reclaim unused capacity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use strata_reader::buffer::{Buffer, GrowingFillResult};
-    /// # use std::io::Cursor;
-    /// let mut buffer = Buffer::new();
-    /// let mut reader = Cursor::new("Hello\nWorld");
-    /// let result = buffer.fill_until(&mut reader, '\n', None).unwrap();
-    /// assert!(matches!(result, GrowingFillResult::Complete(6)));  // "Hello\n" (includes delimiter)
-    /// assert_eq!(buffer.as_str().unwrap(), "Hello\nWorld");
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns any I/O errors encountered while reading, or UTF-8 validation errors.
-    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
-    pub fn fill_until(
-        &mut self,
-        reader: impl Read,
-        delimiter: char,
-        max_capacity: Option<usize>,
-    ) -> io::Result<GrowingFillResult> {
-        match self.fill_while(reader, |c| c != delimiter, max_capacity)? {
-            GrowingFillResult::Complete(valid_count) => {
-                // Found the delimiter, include it in the count
-                Ok(GrowingFillResult::Complete(
-                    valid_count + delimiter.len_utf8(),
-                ))
-            }
-            result => Ok(result), // Eof or Capped - pass through unchanged
-        }
     }
 
     /// Test helper to inject data directly into the buffer.

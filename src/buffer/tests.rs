@@ -16,7 +16,7 @@ use crate::constants::CHUNK_SIZE;
 use std::io::Cursor;
 
 // -----------------------------------------------------------------------------
-// FillResult and GrowingFillResult enums
+// FillResult and UnboundedFillResult enums
 // -----------------------------------------------------------------------------
 
 #[test]
@@ -29,27 +29,30 @@ fn test_fill_result_count() {
 }
 
 #[test]
-fn test_growing_fill_result_count() {
-    let complete = GrowingFillResult::Complete(123);
+fn test_unbounded_fill_result_count() {
+    let complete = UnboundedFillResult::Complete(123);
     assert_eq!(complete.count(), 123);
 
-    let eof = GrowingFillResult::Eof(123);
+    let eof = UnboundedFillResult::Eof(123);
     assert_eq!(eof.count(), 123);
 
-    let capped = GrowingFillResult::Capped(123);
+    let capped = UnboundedFillResult::Capped(123);
     assert_eq!(capped.count(), 123);
 }
 
 #[test]
-fn test_growing_fill_result_from_fill_result() {
+fn test_unbounded_fill_result_from_fill_result() {
     let fill_complete = FillResult::Complete(123);
     let fill_eof = FillResult::Eof(123);
 
-    let growing_complete = GrowingFillResult::from(fill_complete);
-    let growing_eof = GrowingFillResult::from(fill_eof);
+    let unbounded_complete = UnboundedFillResult::from(fill_complete);
+    let unbounded_eof = UnboundedFillResult::from(fill_eof);
 
-    assert!(matches!(growing_complete, GrowingFillResult::Complete(123)));
-    assert!(matches!(growing_eof, GrowingFillResult::Eof(123)));
+    assert!(matches!(
+        unbounded_complete,
+        UnboundedFillResult::Complete(123)
+    ));
+    assert!(matches!(unbounded_eof, UnboundedFillResult::Eof(123)));
 }
 
 // -----------------------------------------------------------------------------
@@ -606,7 +609,7 @@ fn test_buffer_fill_amount() {
     let read = buffer.fill_amount(cur, 123, max_capacity).unwrap();
 
     // We should not have read any bytes
-    assert_eq!(read, GrowingFillResult::Eof(0));
+    assert_eq!(read, UnboundedFillResult::Eof(0));
     assert_eq!(buffer.len(), 0);
 
     // This time, read a bit before hitting EOF
@@ -614,7 +617,7 @@ fn test_buffer_fill_amount() {
     let read = buffer.fill_amount(cur, 123, max_capacity).unwrap();
 
     // We should have one instance of `raw`
-    assert_eq!(read, GrowingFillResult::Eof(raw.len()));
+    assert_eq!(read, UnboundedFillResult::Eof(raw.len()));
     assert_eq!(buffer.len(), raw.len());
     assert_eq!(buffer.buf(), raw.as_bytes());
 
@@ -627,7 +630,7 @@ fn test_buffer_fill_amount() {
     // We should have 4 × `CHUNK_SIZE` bytes of data as there where bytes left in the buffer
     assert_eq!(
         read,
-        GrowingFillResult::Complete(4 * CHUNK_SIZE - raw.len())
+        UnboundedFillResult::Complete(4 * CHUNK_SIZE - raw.len())
     );
     assert_eq!(buffer.len(), 4 * CHUNK_SIZE);
 
@@ -642,7 +645,7 @@ fn test_buffer_fill_amount() {
         .unwrap();
 
     // We should read to fill the current capacity, even though it's larger than `max_capacity`
-    assert_eq!(read, GrowingFillResult::Capped(123));
+    assert_eq!(read, UnboundedFillResult::Capped(123));
     assert_eq!(buffer.len(), 4 * CHUNK_SIZE); // Length unchanged
     assert_eq!(buffer.cap(), 4 * CHUNK_SIZE); // Capacity unchanged
 
@@ -656,7 +659,7 @@ fn test_buffer_fill_amount() {
         .unwrap();
 
     // We should have 4 × `CHUNK_SIZE` bytes of data since 4 is the closest power-of-2 after 3
-    assert_eq!(read, GrowingFillResult::Complete(4 * CHUNK_SIZE));
+    assert_eq!(read, UnboundedFillResult::Complete(4 * CHUNK_SIZE));
     assert_eq!(buffer.len(), 4 * CHUNK_SIZE);
     assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
 
@@ -666,7 +669,7 @@ fn test_buffer_fill_amount() {
         .unwrap();
 
     // We should have hit the max capacity since we requested more than 4 × `CHUNK_SIZE` remaining
-    assert_eq!(read, GrowingFillResult::Capped(4 * CHUNK_SIZE));
+    assert_eq!(read, UnboundedFillResult::Capped(4 * CHUNK_SIZE));
     assert_eq!(buffer.len(), 8 * CHUNK_SIZE); // Hit the max_capacity
     assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
     assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
@@ -676,7 +679,7 @@ fn test_buffer_fill_amount() {
     let read = buffer.fill_amount(cur, 123, max_capacity).unwrap();
 
     // We should have read 0 bytes since the buffer is already at max capacity
-    assert_eq!(read, GrowingFillResult::Capped(0));
+    assert_eq!(read, UnboundedFillResult::Capped(0));
     assert_eq!(buffer.len(), 8 * CHUNK_SIZE); // Still at max
     assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
 }
@@ -883,104 +886,3 @@ fn test_buffer_as_str_from() {
  * which has already been tested with arbitrary binary data matching the continuation
  * byte pattern. The method only adds UTF-8 validation on top of that alignment.
  */
-
-// -----------------------------------------------------------------------------
-// Buffer - UTF-8 Fill
-// -----------------------------------------------------------------------------
-
-#[test]
-fn test_buffer_fill_while() {
-    let mut buffer = Buffer::new();
-
-    // First, let's test the predicate breaking before EOF
-    let data = "Hello, World!";
-    let cur = Cursor::new(data);
-    let result = buffer.fill_while(cur, char::is_alphabetic, None).unwrap();
-
-    // We should get Complete(5) since there are 5 letters before ','
-    assert_eq!(result, GrowingFillResult::Complete(5));
-    assert_eq!(buffer.as_str().unwrap(), "Hello, World!"); // Reading happens in chunks
-
-    // Discard everything for a clean slate
-    buffer.discard();
-
-    // Next, let's test hitting EOF before the predicate breaks
-    let data = "Hello, 世界!";
-    let cur = Cursor::new(data);
-    let result = buffer
-        .fill_while(
-            cur,
-            |c| u32::from(c) <= 0x9FFF, // CJK range max
-            None,
-        )
-        .unwrap();
-
-    // We should get Eof() with the total valid bytes read
-    assert_eq!(result, GrowingFillResult::Eof(14));
-    assert_eq!(buffer.as_str().unwrap(), "Hello, 世界!");
-
-    // Discard everything for a clean slate
-    buffer.discard();
-
-    // Finally, let's test a predicate never breaking and we hit max capacity.
-    let max_cap = 2 * CHUNK_SIZE;
-    let data = "a".repeat(3 * CHUNK_SIZE); // More than max_cap
-    let cur = Cursor::new(&data);
-    let result = buffer.fill_while(cur, |c| c == 'a', Some(max_cap)).unwrap();
-
-    // We should get Capped() since we hit the capacity limit before the predicate broke
-    assert_eq!(result, GrowingFillResult::Capped(max_cap));
-    assert_eq!(buffer.len(), max_cap);
-    assert_eq!(buffer.cap(), max_cap);
-
-    // Discard everything for a clean slate
-    buffer.discard();
-
-    // Finally, let's test that growth actually happens when needed
-    let initial_cap = buffer.cap();
-    let data = "a".repeat(initial_cap + 100) + "!"; // Exceeds initial cap, ends with non-'a'
-    let cur = Cursor::new(&data);
-    let result = buffer.fill_while(cur, |c| c == 'a', None).unwrap();
-
-    // We should get Complete() and the buffer should have grown
-    assert_eq!(result, GrowingFillResult::Complete(initial_cap + 100));
-    assert!(buffer.cap() > initial_cap); // Buffer grew to fit the data
-    assert!(buffer.as_str().unwrap().starts_with("aaaa")); // Sanity check
-}
-
-/* Note: The UTF-8 handling is already tested via `align_pos_to_next_char` and `as_str_from`, and
- * the fill mechanics are covered by `fill`. So we don't need to test that again.
- */
-
-#[test]
-fn test_buffer_fill_until() {
-    // We'll use '世' as our delimiter since it's 3 bytes in UTF-8, making it obvious
-    // if the implementation incorrectly handles multibyte chars
-    let delimiter = '世';
-    let data = "Hello, 世界!";
-
-    // First, call fill_while with the equivalent inverted predicate
-    let mut buffer_while = Buffer::new();
-    let cur = Cursor::new(data);
-    let result_while = buffer_while
-        .fill_while(cur, |c| c != delimiter, None)
-        .unwrap();
-
-    // Then, call fill_until with the same delimiter
-    let mut buffer_until = Buffer::new();
-    let cur = Cursor::new(data);
-    let result_until = buffer_until.fill_until(cur, delimiter, None).unwrap();
-
-    // Both should be Complete() since the delimiter was found
-    assert!(matches!(result_while, GrowingFillResult::Complete(_)));
-    assert!(matches!(result_until, GrowingFillResult::Complete(_)));
-
-    // The difference should be exactly the delimiter's UTF-8 byte length (3 for '世')
-    let diff = result_until.count() - result_while.count();
-    assert_eq!(diff, delimiter.len_utf8());
-
-    // Sanity check: fill_while gives us bytes up to (not including) the delimiter,
-    // fill_until gives us bytes up to and including the delimiter.
-    assert_eq!(result_while.count(), 7);
-    assert_eq!(result_until.count(), 10);
-}
