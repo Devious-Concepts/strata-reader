@@ -12,8 +12,8 @@
 )]
 
 use super::*;
-use crate::constants::CHUNK_SIZE;
-use std::io::Cursor;
+use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
+use std::io::{self, Cursor};
 
 // -----------------------------------------------------------------------------
 // FillResult and UnboundedFillResult enums
@@ -639,11 +639,108 @@ fn test_buffer_fill_amount() {
     assert_eq!(read, FillResult::Complete(4 * CHUNK_SIZE));
     assert_eq!(buffer.len(), 4 * CHUNK_SIZE);
     assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Test error when requesting more than the buffer can accommodate
+    // The buffer cannot grow beyond `PRACTICAL_MAX_SIZE`, so `amt > PRACTICAL_MAX_SIZE - self.len`
+    // is an unfulfillable request
+    let cur = Cursor::new(&data);
+    let result = buffer.fill_amount(cur, PRACTICAL_MAX_SIZE + 1);
+
+    // We should get an InvalidInput error
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+
+    // Even with some data already in the buffer, requesting more than the remaining capacity errors
+    let cur = Cursor::new(&data);
+    buffer.fill_amount(cur, CHUNK_SIZE).unwrap(); // Add some data first
+
+    let cur = Cursor::new(&data);
+    let result = buffer.fill_amount(cur, PRACTICAL_MAX_SIZE); // Now this exceeds remaining capacity
+
+    // We should get an InvalidInput error
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
 }
 
 /* Note: `fill_amount` calls `shrink_targeted` using whatever the starting
  * capacity is; as it's target, so there is no reason to test shrinking again as
  * test for `shrink_targeted` have already been written above.
+ */
+
+#[test]
+fn test_buffer_fill_exact() {
+    let mut buffer = Buffer::new();
+    let raw = "Hello, World!";
+    let data = raw.repeat(6000); // > 8 × `CHUNK_SIZE`
+
+    // Let's start with an EOF test (requesting more than available)
+    let cur = Cursor::new(raw);
+    let result = buffer.fill_exact(cur, 100); // Request more than `raw.len()`
+
+    // We should get an UnexpectedEof error
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+
+    // Buffer state is unspecified after error, so discard and start fresh
+    buffer.discard();
+
+    // Now let's read exactly what's available
+    let cur = Cursor::new(raw);
+    buffer.fill_exact(cur, raw.len()).unwrap();
+
+    // We should have exactly `raw.len()` bytes
+    assert_eq!(buffer.len(), raw.len());
+    assert_eq!(buffer.buf(), raw.as_bytes());
+
+    // Fill more data on top of existing data
+    let mut cur = Cursor::new(&data);
+    buffer.fill_exact(&mut cur, 2 * CHUNK_SIZE).unwrap();
+
+    // We should have `raw.len() + 2 × CHUNK_SIZE` bytes
+    assert_eq!(buffer.len(), raw.len() + 2 * CHUNK_SIZE);
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read a big amount of data, specifically 3 × `CHUNK_SIZE` bytes
+    let cur = Cursor::new(&data);
+    buffer.fill_exact(cur, 3 * CHUNK_SIZE).unwrap();
+
+    // We should have exactly 3 × `CHUNK_SIZE` bytes
+    assert_eq!(buffer.len(), 3 * CHUNK_SIZE);
+    assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Test error when requesting more than the buffer can accommodate
+    // The buffer cannot grow beyond `PRACTICAL_MAX_SIZE`, so `amt > PRACTICAL_MAX_SIZE - self.len`
+    // is an unfulfillable request
+    let cur = Cursor::new(&data);
+    let result = buffer.fill_exact(cur, PRACTICAL_MAX_SIZE + 1);
+
+    // We should get an InvalidInput error
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+
+    // Even with some data already in the buffer, requesting more than the remaining capacity errors
+    let cur = Cursor::new(&data);
+    buffer.fill_exact(cur, CHUNK_SIZE).unwrap(); // Add some data first
+
+    let cur = Cursor::new(&data);
+    let result = buffer.fill_exact(cur, PRACTICAL_MAX_SIZE); // Now this exceeds remaining capacity
+
+    // We should get an InvalidInput error
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+}
+
+/* Note: `fill_exact` calls `shrink_targeted` using whatever the starting
+ * capacity is; as it's target, so there is no reason to test shrinking again as
+ * tests for `shrink_targeted` have already been written above.
  */
 
 // -----------------------------------------------------------------------------

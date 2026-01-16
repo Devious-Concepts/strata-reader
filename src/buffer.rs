@@ -680,11 +680,11 @@ impl Buffer {
 
     /// Fills the buffer with at least `amt` bytes from a reader, growing as needed.
     ///
-    /// Reads data until the requested amount is read or EOF is reached. The buffer grows
-    /// exponentially as needed. On successful completion, the capacity is shrunk to fit the data
-    /// but never below the starting capacity. On EOF, no shrinking occurs.
+    /// Pre-allocates capacity to fit the full requested amount, then reads until the requested
+    /// amount is read or EOF is reached. After the operation completes, any excess capacity
+    /// beyond the starting capacity is released.
     ///
-    /// The total amount of bytes read is returned.
+    /// The total number of bytes read is returned.
     ///
     /// # Examples
     ///
@@ -708,34 +708,31 @@ impl Buffer {
         clippy::indexing_slicing,
         reason = "Safe by invariant"
     )]
-    pub fn fill_amount(
-        &mut self,
-        mut reader: impl Read,
-        amt: usize,
-    ) -> io::Result<FillResult> {
-        // Capture starting capacity to use as shrink limit
+    pub fn fill_amount(&mut self, mut reader: impl Read, amt: usize) -> io::Result<FillResult> {
+        // Check if the requested amount exceeds what we can possibly accommodate
+        if amt > PRACTICAL_MAX_SIZE - self.len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested amount exceeds maximum buffer capacity",
+            ));
+        }
+
+        // Capture starting capacity to use as a shrink target
         let starting_capacity = self.cap;
+
+        // Find the target length (safe: checked above)
+        let target = self.len + amt;
+
+        // Grow to accommodate amt more bytes of data
+        while target > self.cap {
+            self.grow();
+        }
+
         // Track the total bytes read
         let mut total_bytes_read = 0;
 
-        // Loop until we've read enough bytes or break
+        // Loop until we've read enough bytes or EOF
         while total_bytes_read < amt {
-            // Get available space
-            let available = self.cap - self.len;
-
-            // Get remaining amount to read
-            let remaining = amt - total_bytes_read;
-
-            // Note regarding `CHUNK_SIZE / 2`: This should align with a common page size by the
-            // very definition of how `CHUNK_SIZE` is set and what values are valid for it.
-            if available < CHUNK_SIZE / 2 && remaining >= available {
-                // We've hit a point where growing would be more optimal than just filling the
-                // available space.
-
-                // Available space is insufficient, grow to the next size
-                self.grow();
-            }
-
             // Fill all available space
             let bytes_read = match reader.read(&mut self.buf[self.len..self.cap]) {
                 Err(e) => {
@@ -753,14 +750,85 @@ impl Buffer {
 
             if bytes_read == 0 {
                 // We've hit EOF
+                self.shrink_targeted(starting_capacity);
                 return Ok(FillResult::Eof(total_bytes_read));
             }
         }
 
-        // Shrink in case we were overeager with our growth
+        // Release any excess capacity
         self.shrink_targeted(starting_capacity);
 
         Ok(FillResult::Complete(total_bytes_read))
+    }
+
+    /// Fills the buffer with exactly `amt` bytes from a reader, growing as needed.
+    ///
+    /// Pre-allocates capacity to fit the requested amount, then reads exactly that many bytes
+    /// using [`Read::read_exact`]. After the operation completes, any excess capacity beyond
+    /// the starting capacity is released.
+    ///
+    /// Unlike [`fill_amount`](Self::fill_amount), this method requires the full amount to be
+    /// available and returns an error if EOF is reached early.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let data = vec![0u8; 100];
+    /// let mut reader = Cursor::new(data);
+    /// buffer.fill_exact(&mut reader, 100).unwrap();
+    /// assert_eq!(buffer.len(), 100);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::UnexpectedEof`] if the reader cannot provide the full amount.
+    /// On error, the buffer contents are unspecified (some bytes may have been read).
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "Safe by invariant"
+    )]
+    pub fn fill_exact(&mut self, mut reader: impl Read, amt: usize) -> io::Result<()> {
+        // Check if the requested amount exceeds what we can possibly accommodate
+        if amt > PRACTICAL_MAX_SIZE - self.len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested amount exceeds maximum buffer capacity",
+            ));
+        }
+
+        // Capture starting capacity to use as a shrink target
+        let starting_capacity = self.cap;
+
+        // Find the target length (safe: checked above)
+        let target = self.len + amt;
+
+        // Grow to accommodate amt more bytes of data
+        while target > self.cap {
+            self.grow();
+        }
+
+        // Get exact free slice
+        let unfilled = &mut self.buf[self.len..target];
+        debug_assert_eq!(unfilled.len(), amt);
+
+        // Read exactly the requested amount of bytes
+        if let Err(e) = reader.read_exact(unfilled) {
+            self.shrink_targeted(starting_capacity);
+            return Err(e);
+        }
+
+        // Update the length
+        self.len += amt;
+
+        // Release any excess capacity
+        self.shrink_targeted(starting_capacity);
+
+        Ok(())
     }
 
     /// Aligns a position backward to the start of the current UTF-8 character.
