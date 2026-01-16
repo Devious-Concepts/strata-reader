@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```
-//! use strata_reader::buffer::{Buffer, UnboundedFillResult};
+//! use strata_reader::buffer::{Buffer, FillResult};
 //! use strata_reader::constants::CHUNK_SIZE;
 //! use std::io::Cursor;
 //!
@@ -16,8 +16,8 @@
 //! let mut buffer = Buffer::new();
 //!
 //! // Read a specific amount
-//! let result = buffer.fill_amount(cur, 3 * CHUNK_SIZE, None).unwrap();
-//! assert!(matches!(result, UnboundedFillResult::Complete(_)));
+//! let result = buffer.fill_amount(cur, 3 * CHUNK_SIZE).unwrap();
+//! assert!(matches!(result, FillResult::Complete(_)));
 //!
 //! // Consume what we processed
 //! buffer.consume(CHUNK_SIZE);
@@ -680,24 +680,23 @@ impl Buffer {
 
     /// Fills the buffer with at least `amt` bytes from a reader, growing as needed.
     ///
-    /// Reads data until the requested amount is read, EOF is reached, or the maximum capacity
-    /// is hit. The buffer grows exponentially as needed. On successful completion, the capacity
-    /// is shrunk to fit the data but never below the starting capacity. On EOF or capacity limit,
-    /// no shrinking occurs.
+    /// Reads data until the requested amount is read or EOF is reached. The buffer grows
+    /// exponentially as needed. On successful completion, the capacity is shrunk to fit the data
+    /// but never below the starting capacity. On EOF, no shrinking occurs.
     ///
     /// The total amount of bytes read is returned.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use strata_reader::buffer::{Buffer, UnboundedFillResult};
+    /// # use strata_reader::buffer::{Buffer, FillResult};
     /// # use strata_reader::constants::CHUNK_SIZE;
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// let data = vec![0u8; 3 * CHUNK_SIZE];
     /// let mut reader = Cursor::new(data);
-    /// let result = buffer.fill_amount(&mut reader, 3 * CHUNK_SIZE, None).unwrap();
-    /// assert!(matches!(result, UnboundedFillResult::Complete(_)));
+    /// let result = buffer.fill_amount(&mut reader, 3 * CHUNK_SIZE).unwrap();
+    /// assert!(matches!(result, FillResult::Complete(_)));
     /// assert!(result.count() >= 3 * CHUNK_SIZE);
     /// ```
     ///
@@ -713,10 +712,7 @@ impl Buffer {
         &mut self,
         mut reader: impl Read,
         amt: usize,
-        max_capacity: Option<usize>,
-    ) -> io::Result<UnboundedFillResult> {
-        // Get the maximum capacity so we don't grow beyond it
-        let max_capacity = max_capacity.unwrap_or(PRACTICAL_MAX_SIZE);
+    ) -> io::Result<FillResult> {
         // Capture starting capacity to use as shrink limit
         let starting_capacity = self.cap;
         // Track the total bytes read
@@ -732,21 +728,12 @@ impl Buffer {
 
             // Note regarding `CHUNK_SIZE / 2`: This should align with a common page size by the
             // very definition of how `CHUNK_SIZE` is set and what values are valid for it.
-            if available < CHUNK_SIZE / 2 && remaining >= available && self.cap < max_capacity {
+            if available < CHUNK_SIZE / 2 && remaining >= available {
                 // We've hit a point where growing would be more optimal than just filling the
-                // available space. And the available space is too small and we haven't hit max
-                // capacity yet.
+                // available space.
 
                 // Available space is insufficient, grow to the next size
                 self.grow();
-            }
-
-            // At this point, if the buffer is full, we've hit max capacity
-            if self.len >= self.cap {
-                debug_assert!(self.len == self.cap);
-
-                // We've filled the buffer to max capacity
-                return Ok(UnboundedFillResult::Capped(total_bytes_read));
             }
 
             // Fill all available space
@@ -766,14 +753,14 @@ impl Buffer {
 
             if bytes_read == 0 {
                 // We've hit EOF
-                return Ok(UnboundedFillResult::Eof(total_bytes_read));
+                return Ok(FillResult::Eof(total_bytes_read));
             }
         }
 
         // Shrink in case we were overeager with our growth
         self.shrink_targeted(starting_capacity);
 
-        Ok(UnboundedFillResult::Complete(total_bytes_read))
+        Ok(FillResult::Complete(total_bytes_read))
     }
 
     /// Aligns a position backward to the start of the current UTF-8 character.

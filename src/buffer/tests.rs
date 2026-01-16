@@ -600,88 +600,45 @@ fn test_buffer_fill() {
 #[test]
 fn test_buffer_fill_amount() {
     let mut buffer = Buffer::new();
-    let max_capacity = Some(8 * CHUNK_SIZE);
     let raw = "Hello, World!";
     let data = raw.repeat(6000); // > 8 × `CHUNK_SIZE`
 
     // Let's start with an EOF test
     let cur = Cursor::new("");
-    let read = buffer.fill_amount(cur, 123, max_capacity).unwrap();
+    let read = buffer.fill_amount(cur, 123).unwrap();
 
     // We should not have read any bytes
-    assert_eq!(read, UnboundedFillResult::Eof(0));
+    assert_eq!(read, FillResult::Eof(0));
     assert_eq!(buffer.len(), 0);
 
     // This time, read a bit before hitting EOF
     let cur = Cursor::new(raw);
-    let read = buffer.fill_amount(cur, 123, max_capacity).unwrap();
+    let read = buffer.fill_amount(cur, 123).unwrap();
 
     // We should have one instance of `raw`
-    assert_eq!(read, UnboundedFillResult::Eof(raw.len()));
+    assert_eq!(read, FillResult::Eof(raw.len()));
     assert_eq!(buffer.len(), raw.len());
     assert_eq!(buffer.buf(), raw.as_bytes());
 
     // Fill the buffer to more data for the next test
     let mut cur = Cursor::new(&data);
-    let read = buffer
-        .fill_amount(&mut cur, 2 * CHUNK_SIZE, max_capacity)
-        .unwrap();
+    let read = buffer.fill_amount(&mut cur, 2 * CHUNK_SIZE).unwrap();
 
-    // We should have 4 × `CHUNK_SIZE` bytes of data as there where bytes left in the buffer
-    assert_eq!(
-        read,
-        UnboundedFillResult::Complete(4 * CHUNK_SIZE - raw.len())
-    );
+    // We should have 4 × `CHUNK_SIZE` bytes of data as there were bytes left in the buffer
+    assert_eq!(read, FillResult::Complete(4 * CHUNK_SIZE - raw.len()));
     assert_eq!(buffer.len(), 4 * CHUNK_SIZE);
-
-    // Let's clear a bit of the data so we're lower than 4 × `CHUNK_SIZE`.
-    buffer.consume(123);
-    buffer.compact();
-    assert_eq!(buffer.len(), 4 * CHUNK_SIZE - 123);
-
-    // Now try to read more with max_capacity set to `CHUNK_SIZE` (less than current len)
-    let read = buffer
-        .fill_amount(cur, CHUNK_SIZE, Some(CHUNK_SIZE))
-        .unwrap();
-
-    // We should read to fill the current capacity, even though it's larger than `max_capacity`
-    assert_eq!(read, UnboundedFillResult::Capped(123));
-    assert_eq!(buffer.len(), 4 * CHUNK_SIZE); // Length unchanged
-    assert_eq!(buffer.cap(), 4 * CHUNK_SIZE); // Capacity unchanged
 
     // Discard everything for a clean slate
     buffer.discard();
 
     // Read a big amount of data, specifically 3 × `CHUNK_SIZE` bytes
-    let mut cur = Cursor::new(&data);
-    let read = buffer
-        .fill_amount(&mut cur, 3 * CHUNK_SIZE, max_capacity)
-        .unwrap();
+    let cur = Cursor::new(&data);
+    let read = buffer.fill_amount(cur, 3 * CHUNK_SIZE).unwrap();
 
     // We should have 4 × `CHUNK_SIZE` bytes of data since 4 is the closest power-of-2 after 3
-    assert_eq!(read, UnboundedFillResult::Complete(4 * CHUNK_SIZE));
+    assert_eq!(read, FillResult::Complete(4 * CHUNK_SIZE));
     assert_eq!(buffer.len(), 4 * CHUNK_SIZE);
     assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
-
-    // Read the rest of the data
-    let read = buffer
-        .fill_amount(cur, data.len() - 4 * CHUNK_SIZE, max_capacity)
-        .unwrap();
-
-    // We should have hit the max capacity since we requested more than 4 × `CHUNK_SIZE` remaining
-    assert_eq!(read, UnboundedFillResult::Capped(4 * CHUNK_SIZE));
-    assert_eq!(buffer.len(), 8 * CHUNK_SIZE); // Hit the max_capacity
-    assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
-    assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
-
-    // Try to read again when buffer is full
-    let cur = Cursor::new(&data);
-    let read = buffer.fill_amount(cur, 123, max_capacity).unwrap();
-
-    // We should have read 0 bytes since the buffer is already at max capacity
-    assert_eq!(read, UnboundedFillResult::Capped(0));
-    assert_eq!(buffer.len(), 8 * CHUNK_SIZE); // Still at max
-    assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
 }
 
 /* Note: `fill_amount` calls `shrink_targeted` using whatever the starting
