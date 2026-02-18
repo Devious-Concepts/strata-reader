@@ -417,37 +417,63 @@ fn test_buffer_cap_up_linear() {
 // Buffer - Capacity control
 // -----------------------------------------------------------------------------
 
-#[test]
-fn test_buffer_grow() {
-    let mut buffer = Buffer::with_capacity(5 * CHUNK_SIZE); // Not power-of-2 multiple
+/* Note: The `grow` method is just a wrapper over `grow_targeted`
+ * Thus, I've deferred testing to the tests for `grow_targeted`
+ * There's no need to test the same method twice after all
+ */
 
-    // When not aligned to a power-of-2 multiples of `CHUNK_SIZE`, we only grows so we're aligned
-    buffer.grow();
+#[test]
+fn test_buffer_grow_targeted() {
+    let mut buffer = Buffer::new(); // Starts at CHUNK_SIZE
+
+    // Double-check the starting cap
+    assert_eq!(buffer.cap(), CHUNK_SIZE);
+    assert!(buffer.buf.capacity() >= CHUNK_SIZE); // Also double check the internals
+    assert_eq!(buffer.buf.len(), CHUNK_SIZE);
+
+    /* Note: We can't check an upper bound of `buffer.buf.capacity()` since it's resized using an
+     * "at least" method with no documented ceiling. While usually exact or slightly bigger, there's
+     * no way we can guarantee that for our tests. The best we can, or should, do is follow the docs
+     */
+
+    // Growing with a target equal to the current cap is a no-op
+    buffer.grow_targeted(CHUNK_SIZE);
+    assert_eq!(buffer.cap(), CHUNK_SIZE);
+    assert!(buffer.buf.capacity() >= CHUNK_SIZE); // Also double check the internals
+    assert_eq!(buffer.buf.len(), CHUNK_SIZE);
+
+    // Grow to a target that is an exact power-of-2 multiple — no overshoot
+    buffer.grow_targeted(4 * CHUNK_SIZE);
+    assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+    assert!(buffer.buf.capacity() >= 4 * CHUNK_SIZE); // Also double check the internals
+    assert_eq!(buffer.buf.len(), 4 * CHUNK_SIZE);
+
+    // Growing with a target below the current cap is also a no-op — even usize::MIN
+    buffer.grow_targeted(usize::MIN); // rounds to CHUNK_SIZE, which is less than 4 * CHUNK_SIZE
+    assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+    assert!(buffer.buf.capacity() >= 4 * CHUNK_SIZE); // Also double check the internals
+    assert_eq!(buffer.buf.len(), 4 * CHUNK_SIZE);
+
+    // Grow to a non-aligned target to show rounding to the next power-of-2 multiple
+    buffer.grow_targeted(5 * CHUNK_SIZE); // not a power-of-2 multiple
     assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
     assert!(buffer.buf.capacity() >= 8 * CHUNK_SIZE); // Also double check the internals
     assert_eq!(buffer.buf.len(), 8 * CHUNK_SIZE);
 
-    // Each grow, when aligned, doubles.
-    buffer.grow();
+    // Grow another step
+    buffer.grow_targeted(16 * CHUNK_SIZE);
     assert_eq!(buffer.cap(), 16 * CHUNK_SIZE);
     assert!(buffer.buf.capacity() >= 16 * CHUNK_SIZE); // Also double check the internals
     assert_eq!(buffer.buf.len(), 16 * CHUNK_SIZE);
 
-    // Again
-    buffer.grow();
-    assert_eq!(buffer.cap(), 32 * CHUNK_SIZE);
-    assert!(buffer.buf.capacity() >= 32 * CHUNK_SIZE); // Also double check the internals
-    assert_eq!(buffer.buf.len(), 32 * CHUNK_SIZE);
-
     // And again
-    buffer.grow();
+    buffer.grow_targeted(64 * CHUNK_SIZE);
     assert_eq!(buffer.cap(), 64 * CHUNK_SIZE);
     assert!(buffer.buf.capacity() >= 64 * CHUNK_SIZE); // Also double check the internals
     assert_eq!(buffer.buf.len(), 64 * CHUNK_SIZE);
 
-    // And two more times for good measure
-    buffer.grow();
-    buffer.grow(); // double grow
+    // A large non-aligned jump to show we can skip multiple doublings at once
+    buffer.grow_targeted(200 * CHUNK_SIZE - 123); // not a power-of-2 multiple
     assert_eq!(buffer.cap(), 256 * CHUNK_SIZE);
     assert!(buffer.buf.capacity() >= 256 * CHUNK_SIZE); // Also double check the internals
     assert_eq!(buffer.buf.len(), 256 * CHUNK_SIZE);
@@ -480,7 +506,7 @@ fn test_buffer_shrink_targeted() {
 
     /* Note: We can't check an upper bound of `buffer.buf.capacity()` since it's resized using an
      * "at least" method with no documented ceiling. While usually exact or slightly bigger, there's
-     * no way we can guarantee for our tests. The best we can, or should, do is follow the docs
+     * no way we can guarantee that for our tests. The best we can, or should, do is follow the docs
      */
 
     // In this case we have slightly less than 250 × `CHUNK_SIZE` data so that's becomes our target

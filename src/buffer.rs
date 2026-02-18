@@ -522,6 +522,38 @@ impl Buffer {
         ((capacity + CHUNK_SIZE - 1) / CHUNK_SIZE) * CHUNK_SIZE
     }
 
+    /// Grows the buffer capacity to at least the specified target.
+    ///
+    /// If the buffer's current capacity already meets or exceeds `target`, no operation is
+    /// performed. Otherwise, grows to the nearest power-of-2 multiple of [`CHUNK_SIZE`] that
+    /// accommodates `target`, up to a maximum of [`PRACTICAL_MAX_SIZE`].
+    ///
+    /// For unconditional single-step growth to the next power-of-2 multiple, use
+    /// [`grow()`](Self::grow).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use strata_reader::constants::CHUNK_SIZE;
+    /// let mut buffer = Buffer::new(); // starts at CHUNK_SIZE
+    /// buffer.grow_targeted(4 * CHUNK_SIZE);
+    /// assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+    ///
+    /// // No-op when already large enough
+    /// buffer.grow_targeted(CHUNK_SIZE);
+    /// assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+    /// ```
+    #[inline]
+    pub fn grow_targeted(&mut self, target: usize) {
+        let next = Self::cap_up(target);
+
+        if next > self.cap {
+            self.buf.resize(next, 0);
+            self.cap = next;
+        }
+    }
+
     /// Grows the buffer capacity to the next power-of-2 multiple of [`CHUNK_SIZE`].
     ///
     /// The capacity grows exponentially (e.g., `CHUNK_SIZE` → `2 * CHUNK_SIZE` → `4 * CHUNK_SIZE`)
@@ -540,14 +572,7 @@ impl Buffer {
     #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
     #[inline]
     pub fn grow(&mut self) {
-        // The capacity maxes out at [`PRACTICAL_MAX_SIZE`] so adding `CHUNK_SIZE` can't overflow.
-
-        // Round `self.cap()` up to ensure we advance to the next power of two multiple of
-        // `CHUNK_SIZE` even when already at a power of two.
-        let next = Self::cap_up(self.cap + CHUNK_SIZE - 1);
-
-        self.buf.resize(next, 0);
-        self.cap = next;
+        self.grow_targeted(self.cap + CHUNK_SIZE);
     }
 
     /// Shrinks the buffer capacity to fit the current data.
