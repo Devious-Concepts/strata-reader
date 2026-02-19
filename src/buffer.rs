@@ -749,9 +749,7 @@ impl Buffer {
         let target = self.len + amt;
 
         // Grow to accommodate amt more bytes of data
-        while target > self.cap {
-            self.grow();
-        }
+        self.grow_targeted(target);
 
         // Track the total bytes read
         let mut total_bytes_read = 0;
@@ -833,9 +831,7 @@ impl Buffer {
         let target = self.len + amt;
 
         // Grow to accommodate amt more bytes of data
-        while target > self.cap {
-            self.grow();
-        }
+        self.grow_targeted(target);
 
         // Get exact free slice
         let unfilled = &mut self.buf[self.len..target];
