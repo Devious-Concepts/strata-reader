@@ -790,6 +790,96 @@ fn test_buffer_fill_exact() {
  * tests for `shrink_targeted` have already been written above.
  */
 
+#[test]
+fn test_buffer_fill_to_end() {
+    let mut buffer = Buffer::new();
+
+    // Let's start with an empty reader (immediate EOF)
+    let cur = Cursor::new("");
+    let read = buffer.fill_to_end(cur).unwrap();
+
+    // We should not have read any bytes
+    assert_eq!(read, 0);
+    assert_eq!(buffer.len(), 0);
+    assert_eq!(buffer.cap(), CHUNK_SIZE); // Capacity unchanged
+
+    // Read some data that fits within a single chunk
+    let raw = "Hello, World!";
+    let cur = Cursor::new(raw);
+    let read = buffer.fill_to_end(cur).unwrap();
+
+    // We should have read all the data
+    assert_eq!(read, raw.len());
+    assert_eq!(buffer.len(), raw.len());
+    assert_eq!(buffer.buf(), raw.as_bytes());
+    assert_eq!(buffer.cap(), CHUNK_SIZE); // No growth needed
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read data that exactly fills one chunk — should not trigger growth
+    let data = raw.repeat(4000); // > 5 × `CHUNK_SIZE`
+    let cur = Cursor::new(&data.as_bytes()[..CHUNK_SIZE]);
+    let read = buffer.fill_to_end(cur).unwrap();
+
+    // We should have read exactly one chunk
+    assert_eq!(read, CHUNK_SIZE);
+    assert_eq!(buffer.len(), CHUNK_SIZE);
+    assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
+    assert_eq!(buffer.cap(), CHUNK_SIZE); // Grew to 2× during the read, then shrunk back
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read data that spans multiple chunks to exercise growth
+    let cur = Cursor::new(&data.as_bytes()[..5 * CHUNK_SIZE]);
+    let read = buffer.fill_to_end(cur).unwrap();
+
+    // We should have read all the data
+    assert_eq!(read, 5 * CHUNK_SIZE);
+    assert_eq!(buffer.len(), 5 * CHUNK_SIZE);
+    assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
+    // Capacity should have shrunk back to fit the data (linear rounding)
+    assert_eq!(buffer.cap(), 5 * CHUNK_SIZE);
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read data that is not a multiple of `CHUNK_SIZE` to test shrink behavior
+    let cur = Cursor::new(&data.as_bytes()[..3 * CHUNK_SIZE + 123]);
+    let read = buffer.fill_to_end(cur).unwrap();
+
+    // We should have read all the data
+    assert_eq!(read, 3 * CHUNK_SIZE + 123);
+    assert_eq!(buffer.len(), 3 * CHUNK_SIZE + 123);
+    assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
+    // Capacity should be the next linear multiple above the data length
+    assert_eq!(buffer.cap(), 4 * CHUNK_SIZE);
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read into a buffer that already has data to test appending behavior
+    let cur = Cursor::new(raw);
+    buffer.fill_to_end(cur).unwrap();
+
+    let cur = Cursor::new(&data.as_bytes()[..2 * CHUNK_SIZE]);
+    let read = buffer.fill_to_end(cur).unwrap();
+
+    // We should have appended to the existing data
+    assert_eq!(read, 2 * CHUNK_SIZE);
+    assert_eq!(buffer.len(), raw.len() + 2 * CHUNK_SIZE);
+    // The first part should still be intact
+    assert_eq!(&buffer.buf()[..raw.len()], raw.as_bytes());
+    // Capacity should accommodate the combined data
+    assert_eq!(buffer.cap(), 3 * CHUNK_SIZE);
+}
+
+/* Note: `fill_to_end` calls `shrink_targeted` using whatever the starting
+ * capacity is as its target, so there is no reason to test shrinking again as
+ * tests for `shrink_targeted` have already been written above.
+ */
+
 // -----------------------------------------------------------------------------
 // Buffer - UTF-8 Helpers
 // -----------------------------------------------------------------------------

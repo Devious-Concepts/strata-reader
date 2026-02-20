@@ -759,17 +759,17 @@ impl Buffer {
             // Fill all available space
             let bytes_read = reader.read(&mut self.buf[self.len..self.cap])?;
 
-            // Increase the length by the number of bytes read
-            self.len += bytes_read;
-
-            // Increase the total number of bytes read
-            total_bytes_read += bytes_read;
-
             if bytes_read == 0 {
                 // We've hit EOF
                 self.shrink_targeted(starting_capacity);
                 return Ok(FillResult::Eof(total_bytes_read));
             }
+
+            // Increase the length by the number of bytes read
+            self.len += bytes_read;
+
+            // Increase the total number of bytes read
+            total_bytes_read += bytes_read;
         }
 
         // Release any excess capacity
@@ -841,6 +841,83 @@ impl Buffer {
         self.shrink_targeted(starting_capacity);
 
         Ok(())
+    }
+
+    /// Reads from a reader until EOF, growing the buffer as needed.
+    ///
+    /// Repeatedly reads into available buffer space, growing exponentially when full,
+    /// until the reader returns `Ok(0)` (EOF). After the operation completes, any excess
+    /// capacity beyond the starting capacity is released.
+    ///
+    /// Note that this method has no capacity limit — the buffer will grow unboundedly
+    /// until EOF is reached or an error occurs. Callers should ensure the input is
+    /// reasonably sized or impose their own limits before calling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let data = vec![42u8; 100];
+    /// let mut reader = Cursor::new(data);
+    /// let bytes_read = buffer.fill_to_end(&mut reader).unwrap();
+    /// assert_eq!(bytes_read, 100);
+    /// assert_eq!(buffer.len(), 100);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading. On error, bytes read before
+    /// the failure remain in the buffer but the returned count is not available.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "Safe by invariant"
+    )]
+    pub fn fill_to_end(&mut self, mut reader: impl Read) -> io::Result<usize> {
+        // Capture starting capacity to use as shrink limit
+        let starting_capacity = self.cap;
+        // Track the total bytes read
+        let mut total_bytes_read = 0;
+
+        // Loop until we hit EOF
+        loop {
+            if self.len >= self.cap {
+                debug_assert!(self.len == self.cap);
+
+                // Buffer is full, so grow.
+                self.grow();
+
+                // Note: This will OOM eventually, or stall infinitely if
+                // ran with more than 8 EiB of RAM in some super data centre
+            }
+
+            // Fill all available space, retrying on interrupt
+            let bytes_read = loop {
+                match reader.read(&mut self.buf[self.len..self.cap]) {
+                    Ok(n) => break n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            };
+
+            if bytes_read == 0 {
+                // We've hit EOF
+                break;
+            }
+
+            // Increase the length by the number of bytes read
+            self.len += bytes_read;
+
+            // Increase the total number of bytes read
+            total_bytes_read += bytes_read;
+        }
+
+        // Shrink in case we were overeager with our growth
+        self.shrink_targeted(starting_capacity);
+
+        Ok(total_bytes_read)
     }
 
     /// Aligns a position backward to the start of the current UTF-8 character.
