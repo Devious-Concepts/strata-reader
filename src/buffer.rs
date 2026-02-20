@@ -757,13 +757,7 @@ impl Buffer {
         // Loop until we've read enough bytes or EOF
         while total_bytes_read < amt {
             // Fill all available space
-            let bytes_read = match reader.read(&mut self.buf[self.len..self.cap]) {
-                Err(e) => {
-                    self.shrink_targeted(starting_capacity);
-                    return Err(e);
-                }
-                Ok(r) => r,
-            };
+            let bytes_read = reader.read(&mut self.buf[self.len..self.cap])?;
 
             // Increase the length by the number of bytes read
             self.len += bytes_read;
@@ -838,10 +832,7 @@ impl Buffer {
         debug_assert_eq!(unfilled.len(), amt);
 
         // Read exactly the requested amount of bytes
-        if let Err(e) = reader.read_exact(unfilled) {
-            self.shrink_targeted(starting_capacity);
-            return Err(e);
-        }
+        reader.read_exact(unfilled)?;
 
         // Update the length
         self.len += amt;
@@ -1011,26 +1002,6 @@ impl Buffer {
         }
 
         Ok("")
-    }
-
-    /// Test helper to inject data directly into the buffer.
-    ///
-    /// This bypasses the normal fill operations and directly sets buffer contents,
-    /// useful for testing specific buffer states.
-    ///
-    /// # Safety
-    ///
-    /// This is only available in test builds and should only be used in tests.
-    /// It does not validate that the invariants are maintained.
-    #[cfg(test)]
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "Used in tests only, so it being unsafe is fine"
-    )]
-    pub fn inject_test_data(&mut self, data: &[u8]) {
-        self.buf[..data.len()].copy_from_slice(data);
-        self.len = data.len();
-        self.pos = 0;
     }
 }
 

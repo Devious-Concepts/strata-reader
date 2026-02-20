@@ -15,6 +15,27 @@ use super::*;
 use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
 use std::io::{self, Cursor};
 
+impl Buffer {
+    /// Test helper to inject data directly into the buffer.
+    ///
+    /// This bypasses the normal fill operations and directly sets buffer contents,
+    /// useful for testing specific buffer states. It does not validate that the
+    /// buffer invariants are maintained.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data` is longer than the buffer's allocated capacity.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Used in tests only, so it being unsafe is fine"
+    )]
+    pub fn inject_test_data(&mut self, data: &[u8]) {
+        self.buf[..data.len()].copy_from_slice(data);
+        self.len = data.len();
+        self.pos = 0;
+    }
+}
+
 // -----------------------------------------------------------------------------
 // FillResult and UnboundedFillResult enums
 // -----------------------------------------------------------------------------
