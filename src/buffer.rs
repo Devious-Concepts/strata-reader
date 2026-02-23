@@ -920,6 +920,112 @@ impl Buffer {
         Ok(total_bytes_read)
     }
 
+    /// Reads from a reader while a predicate holds, growing the buffer as needed.
+    ///
+    /// After each successful read, the predicate is called with the **full unconsumed data**
+    /// (`&buf[pos..len]`). The loop continues while the predicate returns `true`. Because
+    /// the predicate always receives the full unconsumed slice (not just newly-read bytes),
+    /// it can detect patterns that span read boundaries.
+    ///
+    /// `max_capacity` caps how large the buffer may grow. When the buffer is full and at
+    /// the cap, [`UnboundedFillResult::Capped`] is returned. The value is rounded up to
+    /// the nearest power-of-2 multiple of [`CHUNK_SIZE`] via [`cap_up`](Self::cap_up).
+    /// Pass `None` for no limit.
+    ///
+    /// # Examples
+    ///
+    /// Read until a delimiter is found, tracking its position:
+    ///
+    /// ```
+    /// # use strata_reader::buffer::{Buffer, UnboundedFillResult};
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new(b"key=value\nother");
+    ///
+    /// let mut delim_pos = None;
+    /// let result = buffer.fill_while(
+    ///     &mut reader,
+    ///     |data| {
+    ///         match data.iter().position(|&b| b == b'\n') {
+    ///             Some(pos) => { delim_pos = Some(pos); false }
+    ///             None => true,
+    ///         }
+    ///     },
+    ///     None,
+    /// ).unwrap();
+    ///
+    /// assert!(matches!(result, UnboundedFillResult::Complete(_)));
+    /// assert_eq!(delim_pos, Some(9));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading. On error, bytes read before
+    /// the failure remain in the buffer but the returned count is not available.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "Safe by invariant"
+    )]
+    pub fn fill_while(
+        &mut self,
+        mut reader: impl Read,
+        mut predicate: impl FnMut(&[u8]) -> bool,
+        max_capacity: Option<usize>,
+    ) -> io::Result<UnboundedFillResult> {
+        let max_cap = Self::cap_up(max_capacity.unwrap_or(PRACTICAL_MAX_SIZE));
+
+        // Capture starting capacity to use as shrink limit
+        let starting_capacity = self.cap;
+        // Track the total bytes read
+        let mut total_bytes_read = 0;
+
+        loop {
+            if self.len >= self.cap {
+                debug_assert!(self.len == self.cap);
+
+                if self.cap >= max_cap {
+                    // Buffer is full and can't grow
+                    return Ok(UnboundedFillResult::Capped(total_bytes_read));
+                }
+
+                // Buffer is full, so grow
+                self.grow();
+            }
+
+            // Fill all available space, retrying on interrupt
+            let bytes_read = loop {
+                match reader.read(&mut self.buf[self.len..self.cap]) {
+                    Ok(n) => break n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            };
+
+            if bytes_read == 0 {
+                // We've hit EOF
+                self.shrink_targeted(starting_capacity);
+                return Ok(UnboundedFillResult::Eof(total_bytes_read));
+            }
+
+            // Increase the length by the number of bytes read
+            self.len += bytes_read;
+
+            // Increase the total number of bytes read
+            total_bytes_read += bytes_read;
+
+            // Check if the predicate is satisfied
+            if !predicate(&self.buf[self.pos..self.len]) {
+                break;
+            }
+        }
+
+        // Shrink in case we were overeager with our growth
+        self.shrink_targeted(starting_capacity);
+
+        Ok(UnboundedFillResult::Complete(total_bytes_read))
+    }
+
     /// Aligns a position backward to the start of the current UTF-8 character.
     ///
     /// If `pos` falls in the middle of a UTF-8 multi-byte character, this moves backward to the

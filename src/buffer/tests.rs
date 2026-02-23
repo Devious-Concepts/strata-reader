@@ -881,6 +881,142 @@ fn test_buffer_fill_to_end() {
  */
 
 // -----------------------------------------------------------------------------
+// Buffer - fill_while
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_buffer_fill_while() {
+    let mut buffer = Buffer::new();
+    let raw = "Hello, World!";
+    let data = raw.repeat(6000); // > 8 × `CHUNK_SIZE`
+
+    // Let's start with an empty reader (immediate EOF)
+    let cur = Cursor::new("");
+    let read = buffer.fill_while(cur, |_| true, None).unwrap();
+
+    // We should not have read any bytes
+    assert_eq!(read, UnboundedFillResult::Eof(0));
+    assert_eq!(buffer.len(), 0);
+    assert_eq!(buffer.cap(), CHUNK_SIZE); // Capacity unchanged
+
+    // Read some data where the predicate stops mid-stream (looking for a space)
+    let cur = Cursor::new(raw);
+    let read = buffer.fill_while(cur, |d| !d.contains(&b' '), None).unwrap();
+
+    // The predicate should have stopped, and the buffer should contain a space
+    assert!(matches!(read, UnboundedFillResult::Complete(_)));
+    assert!(buffer.buf().contains(&b' '));
+    assert_eq!(buffer.cap(), CHUNK_SIZE); // No growth needed
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read data where the predicate is never satisfied — should reach EOF
+    let cur = Cursor::new(raw);
+    let read = buffer.fill_while(cur, |d| !d.contains(&b'\n'), None).unwrap();
+
+    // We should have hit EOF with all the data read
+    assert_eq!(read, UnboundedFillResult::Eof(raw.len()));
+    assert_eq!(buffer.len(), raw.len());
+    assert_eq!(buffer.buf(), raw.as_bytes());
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read data that spans multiple chunks to exercise growth
+    let cur = Cursor::new(&data.as_bytes()[..5 * CHUNK_SIZE]);
+    let read = buffer
+        .fill_while(cur, |d| !d.contains(&b'\n'), None)
+        .unwrap();
+
+    // We should have hit EOF after reading all the data
+    assert_eq!(read, UnboundedFillResult::Eof(5 * CHUNK_SIZE));
+    assert_eq!(buffer.len(), 5 * CHUNK_SIZE);
+    assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
+    // Capacity should have shrunk back to fit the data (linear rounding)
+    assert_eq!(buffer.cap(), 5 * CHUNK_SIZE);
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read into a buffer that already has data to test the predicate sees full unconsumed data
+    buffer.inject_test_data(b"pre:");
+    let cur = Cursor::new(raw);
+    let read = buffer
+        .fill_while(
+            cur,
+            |d| {
+                // The predicate should always see the "pre:" prefix
+                assert!(d.starts_with(b"pre:"));
+                !d.contains(&b' ')
+            },
+            None,
+        )
+        .unwrap();
+
+    // The predicate should have stopped once it saw the space in "Hello, World!"
+    assert!(matches!(read, UnboundedFillResult::Complete(_)));
+    assert_eq!(&buffer.buf()[..4], b"pre:");
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Read with consumed data (pos > 0) — the predicate should only see unconsumed data
+    buffer.inject_test_data(b"consumed:kept:");
+    buffer.consume(9); // consume "consumed:"
+
+    let cur = Cursor::new(raw);
+    let read = buffer
+        .fill_while(
+            cur,
+            |d| {
+                // Should see "kept:" prefix, not "consumed:"
+                assert!(d.starts_with(b"kept:"));
+                !d.contains(&b' ')
+            },
+            None,
+        )
+        .unwrap();
+
+    // The predicate should have stopped
+    assert!(matches!(read, UnboundedFillResult::Complete(_)));
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Test max_capacity — cap at `CHUNK_SIZE` with a reader larger than that
+    let big_data = vec![b'a'; CHUNK_SIZE * 3];
+    let cur = Cursor::new(&big_data[..]);
+    let read = buffer
+        .fill_while(cur, |_| true, Some(CHUNK_SIZE))
+        .unwrap();
+
+    // We should have hit the capacity ceiling
+    assert!(matches!(read, UnboundedFillResult::Capped(_)));
+    assert_eq!(buffer.len(), CHUNK_SIZE); // Filled to cap
+    assert_eq!(buffer.cap(), CHUNK_SIZE); // Did not grow beyond
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Test max_capacity with `None` — behaves like unbounded, reads to EOF
+    let cur = Cursor::new(&data.as_bytes()[..4 * CHUNK_SIZE]);
+    let read = buffer
+        .fill_while(cur, |_| true, None)
+        .unwrap();
+
+    // We should have hit EOF
+    assert_eq!(read, UnboundedFillResult::Eof(4 * CHUNK_SIZE));
+    assert_eq!(buffer.len(), 4 * CHUNK_SIZE);
+    assert_eq!(buffer.buf(), &data.as_bytes()[..buffer.len()]); // Data should match
+}
+
+/* Note: `fill_while` calls `shrink_targeted` using whatever the starting
+ * capacity is as its target, so there is no reason to test shrinking again as
+ * tests for `shrink_targeted` have already been written above.
+ */
+
+// -----------------------------------------------------------------------------
 // Buffer - UTF-8 Helpers
 // -----------------------------------------------------------------------------
 
