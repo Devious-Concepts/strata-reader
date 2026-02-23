@@ -118,6 +118,17 @@ impl From<FillResult> for UnboundedFillResult {
     }
 }
 
+/// Result of a single grow-and-read cycle performed by [`Buffer::read_once`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadOnce {
+    /// Successfully read bytes. `Buffer::len` and `total_bytes_read` have been updated.
+    Read,
+    /// The reader returned 0 bytes — end-of-file.
+    Eof,
+    /// The buffer is full and the cap-check closure indicated it cannot grow further.
+    Capped,
+}
+
 /// A dynamically sized buffer with chunked capacity management.
 ///
 /// `Buffer` provides high-performance buffered I/O operations with automatic capacity adjustment.
@@ -843,6 +854,56 @@ impl Buffer {
         Ok(())
     }
 
+    /// Grows (if needed and allowed), reads once from `reader`, and updates bookkeeping.
+    ///
+    /// When the buffer is full, `is_capped` is consulted first: if `Some(f)` and
+    /// `f(self.cap)` returns `true`, the read is skipped and [`ReadOnce::Capped`] is
+    /// returned. Otherwise the buffer grows before reading.
+    ///
+    /// On success the read bytes are appended (`self.len` is advanced) and
+    /// `*total_bytes_read` is incremented.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "Safe by invariant"
+    )]
+    fn read_once(
+        &mut self,
+        reader: &mut impl Read,
+        total_bytes_read: &mut usize,
+        is_capped: Option<&mut dyn FnMut(usize) -> bool>,
+    ) -> io::Result<ReadOnce> {
+        if self.len >= self.cap {
+            debug_assert!(self.len == self.cap);
+
+            if let Some(f) = is_capped {
+                if f(self.cap) {
+                    return Ok(ReadOnce::Capped);
+                }
+            }
+
+            self.grow();
+        }
+
+        // Fill all available space, retrying on interrupt
+        let bytes_read = loop {
+            match reader.read(&mut self.buf[self.len..self.cap]) {
+                Ok(n) => break n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        };
+
+        if bytes_read == 0 {
+            return Ok(ReadOnce::Eof);
+        }
+
+        self.len += bytes_read;
+        *total_bytes_read += bytes_read;
+
+        Ok(ReadOnce::Read)
+    }
+
     /// Reads from a reader until EOF, growing the buffer as needed.
     ///
     /// Repeatedly reads into available buffer space, growing exponentially when full,
@@ -870,11 +931,6 @@ impl Buffer {
     ///
     /// Returns any I/O errors encountered while reading. On error, bytes read before
     /// the failure remain in the buffer but the returned count is not available.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "Safe by invariant"
-    )]
     pub fn fill_to_end(&mut self, mut reader: impl Read) -> io::Result<usize> {
         // Capture starting capacity to use as shrink limit
         let starting_capacity = self.cap;
@@ -883,35 +939,11 @@ impl Buffer {
 
         // Loop until we hit EOF
         loop {
-            if self.len >= self.cap {
-                debug_assert!(self.len == self.cap);
-
-                // Buffer is full, so grow.
-                self.grow();
-
-                // Note: This will OOM eventually, or stall infinitely if
-                // ran with more than 8 EiB of RAM in some super data centre
+            match self.read_once(&mut reader, &mut total_bytes_read, None)? {
+                ReadOnce::Read => {}
+                ReadOnce::Eof => break,
+                ReadOnce::Capped => unreachable!(),
             }
-
-            // Fill all available space, retrying on interrupt
-            let bytes_read = loop {
-                match reader.read(&mut self.buf[self.len..self.cap]) {
-                    Ok(n) => break n,
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) => return Err(e),
-                }
-            };
-
-            if bytes_read == 0 {
-                // We've hit EOF
-                break;
-            }
-
-            // Increase the length by the number of bytes read
-            self.len += bytes_read;
-
-            // Increase the total number of bytes read
-            total_bytes_read += bytes_read;
         }
 
         // Shrink in case we were overeager with our growth
@@ -922,15 +954,12 @@ impl Buffer {
 
     /// Reads from a reader while a predicate holds, growing the buffer as needed.
     ///
-    /// After each successful read, the predicate is called with the **full unconsumed data**
-    /// (`&buf[pos..len]`). The loop continues while the predicate returns `true`. Because
-    /// the predicate always receives the full unconsumed slice (not just newly-read bytes),
-    /// it can detect patterns that span read boundaries.
+    /// After each successful read, the predicate is called with the full unconsumed data
+    /// (`&buf[pos..len]`). Reading continues while the predicate returns `true`.
     ///
-    /// `max_capacity` caps how large the buffer may grow. When the buffer is full and at
-    /// the cap, [`UnboundedFillResult::Capped`] is returned. The value is rounded up to
-    /// the nearest power-of-2 multiple of [`CHUNK_SIZE`] via [`cap_up`](Self::cap_up).
-    /// Pass `None` for no limit.
+    /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` for no limit.
+    /// Returns [`UnboundedFillResult::Capped`] if the limit is reached before the predicate
+    /// returns `false`.
     ///
     /// # Examples
     ///
@@ -962,18 +991,14 @@ impl Buffer {
     ///
     /// Returns any I/O errors encountered while reading. On error, bytes read before
     /// the failure remain in the buffer but the returned count is not available.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "Safe by invariant"
-    )]
+    #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
     pub fn fill_while(
         &mut self,
         mut reader: impl Read,
         mut predicate: impl FnMut(&[u8]) -> bool,
-        max_capacity: Option<usize>,
+        growth_limit: Option<usize>,
     ) -> io::Result<UnboundedFillResult> {
-        let max_cap = Self::cap_up(max_capacity.unwrap_or(PRACTICAL_MAX_SIZE));
+        let max_cap = growth_limit.unwrap_or(PRACTICAL_MAX_SIZE);
 
         // Capture starting capacity to use as shrink limit
         let starting_capacity = self.cap;
@@ -981,46 +1006,95 @@ impl Buffer {
         let mut total_bytes_read = 0;
 
         loop {
-            if self.len >= self.cap {
-                debug_assert!(self.len == self.cap);
-
-                if self.cap >= max_cap {
-                    // Buffer is full and can't grow
-                    return Ok(UnboundedFillResult::Capped(total_bytes_read));
-                }
-
-                // Buffer is full, so grow
-                self.grow();
-            }
-
-            // Fill all available space, retrying on interrupt
-            let bytes_read = loop {
-                match reader.read(&mut self.buf[self.len..self.cap]) {
-                    Ok(n) => break n,
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e),
-                }
-            };
-
-            if bytes_read == 0 {
-                // We've hit EOF
-                self.shrink_targeted(starting_capacity);
-                return Ok(UnboundedFillResult::Eof(total_bytes_read));
-            }
-
-            // Increase the length by the number of bytes read
-            self.len += bytes_read;
-
-            // Increase the total number of bytes read
-            total_bytes_read += bytes_read;
-
-            // Check if the predicate is satisfied
+            // Check the predicate on current unconsumed data before reading more
             if !predicate(&self.buf[self.pos..self.len]) {
                 break;
+            }
+
+            match self.read_once(
+                &mut reader,
+                &mut total_bytes_read,
+                Some(&mut |cap| cap >= max_cap),
+            )? {
+                ReadOnce::Capped => return Ok(UnboundedFillResult::Capped(total_bytes_read)),
+                ReadOnce::Eof => {
+                    self.shrink_targeted(starting_capacity);
+                    return Ok(UnboundedFillResult::Eof(total_bytes_read));
+                }
+                ReadOnce::Read => {}
             }
         }
 
         // Shrink in case we were overeager with our growth
+        self.shrink_targeted(starting_capacity);
+
+        Ok(UnboundedFillResult::Complete(total_bytes_read))
+    }
+
+    /// Reads from a reader until a byte delimiter is found, growing the buffer as needed.
+    ///
+    /// Only newly-read data is scanned for `byte` each iteration.
+    ///
+    /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` for no limit.
+    /// Returns [`UnboundedFillResult::Capped`] if the limit is reached before the delimiter
+    /// is found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::{Buffer, UnboundedFillResult};
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new(b"key=value\nother");
+    ///
+    /// let result = buffer.fill_until(&mut reader, b'\n', None).unwrap();
+    ///
+    /// assert!(matches!(result, UnboundedFillResult::Complete(_)));
+    /// assert!(buffer.buf().contains(&b'\n'));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading.
+    #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
+    pub fn fill_until(
+        &mut self,
+        mut reader: impl Read,
+        byte: u8,
+        growth_limit: Option<usize>,
+    ) -> io::Result<UnboundedFillResult> {
+        let max_cap = growth_limit.unwrap_or(PRACTICAL_MAX_SIZE);
+
+        // Capture starting capacity to use as shrink limit
+        let starting_capacity = self.cap;
+        // Track the total bytes read
+        let mut total_bytes_read = 0;
+        // Start checking from the unconsumed region
+        let mut check_pos = self.pos;
+
+        loop {
+            // Check the unchecked portion for the delimiter before reading more
+            if self.buf[check_pos..self.len].contains(&byte) {
+                break;
+            }
+
+            // Advance past what we've already checked
+            check_pos = self.len;
+
+            match self.read_once(
+                &mut reader,
+                &mut total_bytes_read,
+                Some(&mut |cap| cap >= max_cap),
+            )? {
+                ReadOnce::Capped => return Ok(UnboundedFillResult::Capped(total_bytes_read)),
+                ReadOnce::Eof => {
+                    self.shrink_targeted(starting_capacity);
+                    return Ok(UnboundedFillResult::Eof(total_bytes_read));
+                }
+                ReadOnce::Read => {}
+            }
+        }
+
         self.shrink_targeted(starting_capacity);
 
         Ok(UnboundedFillResult::Complete(total_bytes_read))
@@ -1185,6 +1259,120 @@ impl Buffer {
         }
 
         Ok("")
+    }
+
+    /// Reads from a reader until a character delimiter is found, growing the buffer as needed.
+    ///
+    /// Multi-byte characters that span read boundaries are handled correctly.
+    /// Only newly-read data is scanned each iteration.
+    ///
+    /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` for no limit.
+    /// Returns [`UnboundedFillResult::Capped`] if the limit is reached before `ch` is found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::{Buffer, UnboundedFillResult};
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new("Hello, 世界!");
+    ///
+    /// let result = buffer.fill_until_char(&mut reader, '界', None).unwrap();
+    ///
+    /// assert!(matches!(result, UnboundedFillResult::Complete(_)));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading, or an
+    /// [`InvalidData`](io::ErrorKind::InvalidData) error if the buffer contains invalid UTF-8.
+    pub fn fill_until_char(
+        &mut self,
+        reader: impl Read,
+        ch: char,
+        growth_limit: Option<usize>,
+    ) -> io::Result<UnboundedFillResult> {
+        self.fill_until_str(reader, ch.encode_utf8(&mut [0; 4]), growth_limit)
+    }
+
+    /// Reads from a reader until a string delimiter is found, growing the buffer as needed.
+    ///
+    /// Matches that span read boundaries are handled correctly. Only newly-read data
+    /// (plus a small overlap) is scanned each iteration.
+    ///
+    /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` for no limit.
+    /// Returns [`UnboundedFillResult::Capped`] if the limit is reached before `needle`
+    /// is found, or [`UnboundedFillResult::Complete`] immediately if `needle` is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::{Buffer, UnboundedFillResult};
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// let mut reader = Cursor::new(b"Hello, World!END more data");
+    ///
+    /// let result = buffer.fill_until_str(&mut reader, "END", None).unwrap();
+    ///
+    /// assert!(matches!(result, UnboundedFillResult::Complete(_)));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while reading, or an
+    /// [`InvalidData`](io::ErrorKind::InvalidData) error if the buffer contains invalid UTF-8.
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
+    pub fn fill_until_str(
+        &mut self,
+        mut reader: impl Read,
+        needle: &str,
+        growth_limit: Option<usize>,
+    ) -> io::Result<UnboundedFillResult> {
+        if needle.is_empty() {
+            return Ok(UnboundedFillResult::Complete(0));
+        }
+
+        let max_cap = growth_limit.unwrap_or(PRACTICAL_MAX_SIZE);
+
+        // Capture starting capacity to use as shrink limit
+        let starting_capacity = self.cap;
+        let mut total_bytes_read = 0;
+        // Start checking from the first valid char at or after pos
+        let mut check_pos = self.align_pos_to_next_char(self.pos);
+
+        loop {
+            // Decode only the unchecked portion as UTF-8 and search for the needle.
+            // as_str_from trims incomplete chars at the trailing edge, so they'll
+            // be re-examined next iteration when more bytes arrive.
+            let unchecked = self.as_str_from(check_pos)?;
+            if unchecked.contains(needle) {
+                break;
+            }
+
+            // Advance past checked data, but back up by `needle.len() - 1` to catch
+            // matches that span the boundary between this read and the next.
+            // align_pos_to_char ensures we land on a char boundary (backward) so that
+            // as_str_from won't skip past a valid needle start.
+            let end = check_pos + unchecked.len();
+            check_pos = self.align_pos_to_char((end + 1).saturating_sub(needle.len()));
+
+            match self.read_once(
+                &mut reader,
+                &mut total_bytes_read,
+                Some(&mut |cap| cap >= max_cap),
+            )? {
+                ReadOnce::Capped => return Ok(UnboundedFillResult::Capped(total_bytes_read)),
+                ReadOnce::Eof => {
+                    self.shrink_targeted(starting_capacity);
+                    return Ok(UnboundedFillResult::Eof(total_bytes_read));
+                }
+                ReadOnce::Read => {}
+            }
+        }
+
+        self.shrink_targeted(starting_capacity);
+
+        Ok(UnboundedFillResult::Complete(total_bytes_read))
     }
 }
 
