@@ -4,4 +4,4 @@ mod read;
 mod reader;
 
 pub use read::DynamicRead;
-pub use reader::Reader;
+pub use reader::{Reader, ReaderBuilder};

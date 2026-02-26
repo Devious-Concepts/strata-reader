@@ -32,11 +32,13 @@ fn test_reader_new() {
 }
 
 #[test]
-fn test_reader_with_config() {
+fn test_reader_builder() {
     // Create with max_capacity only (initial defaults)
     let cur: Cursor<&str> = Cursor::default();
     let max_capacity = CHUNK_SIZE + 123;
-    let reader = Reader::with_config(cur, None, Some(max_capacity));
+    let reader = Reader::builder(cur)
+        .max_capacity(max_capacity)
+        .build();
 
     // Check internal state matches expectations
     assert_eq!(reader.buffer, Buffer::default());
@@ -46,7 +48,9 @@ fn test_reader_with_config() {
     // Create with initial_capacity only (max defaults)
     let cur: Cursor<&str> = Cursor::default();
     let initial_capacity = 3 * CHUNK_SIZE;
-    let reader = Reader::with_config(cur, Some(initial_capacity), None);
+    let reader = Reader::builder(cur)
+        .initial_capacity(initial_capacity)
+        .build();
 
     // Check internal state matches expectations
     assert_eq!(reader.buffer, Buffer::with_capacity(initial_capacity));
@@ -58,7 +62,10 @@ fn test_reader_with_config() {
     let cur: Cursor<&str> = Cursor::default();
     let initial_capacity = 4 * CHUNK_SIZE;
     let max_capacity = 8 * CHUNK_SIZE;
-    let reader = Reader::with_config(cur, Some(initial_capacity), Some(max_capacity));
+    let reader = Reader::builder(cur)
+        .initial_capacity(initial_capacity)
+        .max_capacity(max_capacity)
+        .build();
 
     // Check internal state matches expectations
     assert_eq!(reader.buffer, Buffer::with_capacity(initial_capacity));
@@ -70,7 +77,10 @@ fn test_reader_with_config() {
     let cur: Cursor<&str> = Cursor::default();
     let initial_capacity = 8 * CHUNK_SIZE;
     let max_capacity = 2 * CHUNK_SIZE;
-    let reader = Reader::with_config(cur, Some(initial_capacity), Some(max_capacity));
+    let reader = Reader::builder(cur)
+        .initial_capacity(initial_capacity)
+        .max_capacity(max_capacity)
+        .build();
 
     // Check internal state matches expectations
     assert_eq!(reader.buffer.cap(), 8 * CHUNK_SIZE);

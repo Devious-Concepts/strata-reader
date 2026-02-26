@@ -14,86 +14,68 @@ impl<R: Read> Reader<R> {
     ///
     /// The buffer starts at the default capacity and can grow up to [`DEFAULT_MAX_SIZE`].
     pub fn new(reader: R) -> Reader<R> {
-        Reader::with_config(reader, None, None)
+        Reader::builder(reader).build()
     }
 
-    /// Creates a new `Reader` with custom capacity configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `reader` - The underlying reader to buffer
-    /// * `initial_capacity` - Initial buffer capacity, or `None` for default
-    /// * `max_capacity` - Maximum buffer capacity, or `None` for [`DEFAULT_MAX_SIZE`]
-    ///
-    /// Both capacities are rounded up to implementation-specific alignment boundaries.
-    /// If `max_capacity` is less than `initial_capacity`, it is raised to match.
-    pub fn with_config(
-        reader: R,
-        initial_capacity: Option<usize>,
-        max_capacity: Option<usize>,
-    ) -> Reader<R> {
-        let buffer = match initial_capacity {
+    /// Returns a [`ReaderBuilder`] for configuring a new `Reader`.
+    pub fn builder(reader: R) -> ReaderBuilder<R> {
+        ReaderBuilder {
+            reader,
+            initial_capacity: None,
+            max_capacity: None,
+        }
+    }
+}
+
+/// A builder for constructing a [`Reader`] with custom capacity settings.
+///
+/// Both capacities are rounded up to implementation-specific alignment boundaries.
+/// If `max_capacity` is less than `initial_capacity`, it is raised to match.
+#[must_use]
+pub struct ReaderBuilder<R> {
+    reader: R,
+    initial_capacity: Option<usize>,
+    max_capacity: Option<usize>,
+}
+
+impl<R: Read> ReaderBuilder<R> {
+    /// Sets the initial buffer capacity.
+    pub fn initial_capacity(mut self, cap: usize) -> Self {
+        self.initial_capacity = Some(cap);
+        self
+    }
+
+    /// Sets the maximum buffer capacity. Defaults to [`DEFAULT_MAX_SIZE`].
+    pub fn max_capacity(mut self, cap: usize) -> Self {
+        self.max_capacity = Some(cap);
+        self
+    }
+
+    /// Builds the [`Reader`] with the configured settings.
+    pub fn build(self) -> Reader<R> {
+        let buffer = match self.initial_capacity {
             Some(cap) => Buffer::with_capacity(cap),
             None => Buffer::new(),
         };
-        let max_capacity = max_capacity
+        let max_capacity = self
+            .max_capacity
             .map_or(DEFAULT_MAX_SIZE, Buffer::cap_up)
             .max(buffer.cap());
 
         Reader {
             buffer,
             max_capacity,
-            reader,
+            reader: self.reader,
         }
     }
 }
 
 impl<R: ?Sized> Reader<R> {
     // TODO: stuff
-
-    /*
-    pub fn grow(&mut self) {
-        if self.buffer.cap() < self.max_capacity {
-            self.buffer.grow();
-        }
-    }
-
-    pub fn shrink(&mut self) {
-        self.buffer.shrink();
-    }
-
-    pub fn consume(&mut self, amt: usize) {
-        self.buffer.consume(amt);
-    }
-
-    pub fn discard(&mut self) {
-        self.buffer.clear();
-    }
-
-    pub fn compact(&mut self) {
-        self.buffer.compact();
-    }
-    */
 }
 
 impl<R: Read + ?Sized> Reader<R> {
-    // Might want a non-consuming version of fill_buf, though might want to
-    // rename it to something else as well...
-    /*
-    #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
-    fn my_fill_buf(&mut self) -> io::Result<&[u8]> {
-        if self.buffer.pos() >= self.buffer.len() {
-            debug_assert!(self.buffer.pos() == self.buffer.len());
-            // We've consumed all the data we have
-
-            // Read to fill the internal buffer
-            let _ = self.buffer.fill(&mut self.reader)?;
-        }
-
-        // Return buffered data
-        Ok(&self.buffer.buf()[self.buffer.pos()..])
-    }
-    */
+    // TODO: stuff
 }
 
 impl<R: Read + ?Sized> Read for Reader<R> {
