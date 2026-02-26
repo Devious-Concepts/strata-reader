@@ -275,6 +275,14 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
         self.buffer.cap()
     }
 
+    fn buffer(&self) -> &[u8] {
+        self.buffer.buf()
+    }
+
+    fn pos(&self) -> usize {
+        self.buffer.pos()
+    }
+
     fn shrink(&mut self) {
         self.buffer.shrink();
     }
@@ -289,6 +297,29 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
 
     fn discard(&mut self) {
         self.buffer.discard();
+    }
+
+    fn fill(&mut self) -> io::Result<usize> {
+        self.buffer.fill(&mut self.reader).map(|r| r.count())
+    }
+
+    /// Reads from the underlying reader while `predicate` returns `true`.
+    ///
+    /// See [`DynamicRead::fill_while`] for the general contract.
+    ///
+    /// This implementation returns `0` without reading in three cases:
+    ///
+    /// - The predicate returned `false` on the existing unconsumed data.
+    /// - The underlying reader reached EOF while the predicate was still unsatisfied.
+    /// - The buffer reached [`max_capacity`](ReaderBuilder::max_capacity)
+    ///   while the predicate was still unsatisfied.
+    fn fill_while<P>(&mut self, predicate: P) -> io::Result<usize>
+    where
+        P: FnMut(&[u8]) -> bool,
+    {
+        self.buffer
+            .fill_while(&mut self.reader, predicate, Some(self.max_capacity))
+            .map(|r| r.count())
     }
 }
 
