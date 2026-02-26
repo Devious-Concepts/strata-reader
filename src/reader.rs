@@ -71,11 +71,104 @@ impl<R: Read> ReaderBuilder<R> {
 }
 
 impl<R: ?Sized> Reader<R> {
-    // TODO: stuff
+    /// Returns up to `n` unconsumed bytes without advancing the read position.
+    ///
+    /// If fewer than `n` unconsumed bytes are available, the returned slice
+    /// contains only what is available. Returns an empty slice when there is
+    /// no unconsumed data.
+    #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
+    pub fn peek(&self, n: usize) -> &[u8] {
+        let start = self.buffer.pos();
+        let end = self.buffer.len().min(start.saturating_add(n));
+        &self.buffer.buf()[start..end]
+    }
+
+    /// Returns up to `n` consumed bytes immediately before the read position.
+    ///
+    /// If fewer than `n` consumed bytes are retained, the returned slice
+    /// contains only what is available. Returns an empty slice when no
+    /// consumed data is retained.
+    #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
+    pub fn peek_behind(&self, n: usize) -> &[u8] {
+        let end = self.buffer.pos();
+        let start = end.saturating_sub(n);
+        &self.buffer.buf()[start..end]
+    }
 }
 
 impl<R: Read + ?Sized> Reader<R> {
-    // TODO: stuff
+    /// Fills the buffer with at least `amt` bytes from the underlying reader, growing as needed.
+    ///
+    /// Returns the total number of bytes read. If the reader reaches EOF before `amt` bytes
+    /// are read, the partial count is returned (without error).
+    ///
+    /// Returns an error if the request would cause the buffer to exceed `max_capacity`.
+    pub fn fill_amount(&mut self, amt: usize) -> io::Result<usize> {
+        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested amount exceeds maximum buffer capacity",
+            ));
+        }
+
+        self.buffer
+            .fill_amount(&mut self.reader, amt)
+            .map(|r| r.count())
+    }
+
+    /// Fills the buffer with exactly `amt` bytes from the underlying reader, growing as needed.
+    ///
+    /// Returns an error if the reader reaches EOF before `amt` bytes are read
+    /// ([`UnexpectedEof`](io::ErrorKind::UnexpectedEof)), or if the request would cause
+    /// the buffer to exceed `max_capacity` ([`InvalidInput`](io::ErrorKind::InvalidInput)).
+    pub fn fill_exact(&mut self, amt: usize) -> io::Result<()> {
+        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested amount exceeds maximum buffer capacity",
+            ));
+        }
+
+        self.buffer.fill_exact(&mut self.reader, amt)
+    }
+
+    /// Reads from the underlying reader until EOF or `max_capacity` is reached.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_to_end(&mut self) -> io::Result<usize> {
+        self.fill_while(|_| true)
+    }
+
+    /// Reads from the underlying reader until a byte delimiter is found, EOF, or `max_capacity`
+    /// is reached. Only newly-read data is scanned for `byte` each iteration.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_until(&mut self, byte: u8) -> io::Result<usize> {
+        self.buffer
+            .fill_until(&mut self.reader, byte, Some(self.max_capacity))
+            .map(|r| r.count())
+    }
+
+    /// Reads from the underlying reader until a character delimiter is found, EOF, or
+    /// `max_capacity` is reached. Multi-byte characters that span read boundaries are handled
+    /// correctly.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_until_char(&mut self, ch: char) -> io::Result<usize> {
+        self.buffer
+            .fill_until_char(&mut self.reader, ch, Some(self.max_capacity))
+            .map(|r| r.count())
+    }
+
+    /// Reads from the underlying reader until a string delimiter is found, EOF, or `max_capacity`
+    /// is reached. Matches that span read boundaries are handled correctly.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_until_str(&mut self, needle: &str) -> io::Result<usize> {
+        self.buffer
+            .fill_until_str(&mut self.reader, needle, Some(self.max_capacity))
+            .map(|r| r.count())
+    }
 }
 
 impl<R: Read + ?Sized> Read for Reader<R> {

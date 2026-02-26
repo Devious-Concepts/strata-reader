@@ -6,7 +6,6 @@
 //! easier to understand since we don't introduce future concepts if we can avoid them.
 
 #![expect(
-    clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::unwrap_used,
     reason = "Okay in tests"
@@ -85,6 +84,72 @@ fn test_reader_builder() {
     // Check internal state matches expectations
     assert_eq!(reader.buffer.cap(), 8 * CHUNK_SIZE);
     assert_eq!(reader.max_capacity, 8 * CHUNK_SIZE); // Raised to match initial
+}
+
+// -----------------------------------------------------------------------------
+// Reader - Peek Methods
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_reader_peek() {
+    // Empty reader returns empty slice
+    let cur: Cursor<&str> = Cursor::default();
+    let reader = Reader::new(cur);
+    assert_eq!(reader.peek(5), &[]);
+
+    // With data in the buffer
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+
+    // Peek at fewer bytes than available
+    assert_eq!(reader.peek(5), b"Hello");
+
+    // Peek at exactly available bytes
+    assert_eq!(reader.peek(data.len()), data.as_bytes());
+
+    // Peek at more than available clamps to what's there
+    assert_eq!(reader.peek(100), data.as_bytes());
+
+    // Peek at zero bytes returns empty slice
+    assert_eq!(reader.peek(0), &[]);
+
+    // Peek doesn't consume — repeated calls return the same data
+    assert_eq!(reader.peek(5), b"Hello");
+
+    // After consuming, peek reflects the new position
+    reader.consume(7);
+    assert_eq!(reader.peek(5), b"World");
+}
+
+#[test]
+fn test_reader_peek_behind() {
+    // Nothing consumed returns empty slice
+    let cur: Cursor<&str> = Cursor::default();
+    let reader = Reader::new(cur);
+    assert_eq!(reader.peek_behind(5), &[]);
+
+    // With data in the buffer, nothing consumed yet
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+    assert_eq!(reader.peek_behind(5), &[]);
+
+    // After consuming some bytes
+    reader.consume(7);
+    assert_eq!(reader.peek_behind(5), b"llo, ");
+    assert_eq!(reader.peek_behind(7), b"Hello, ");
+
+    // More than consumed clamps to what's retained
+    assert_eq!(reader.peek_behind(100), b"Hello, ");
+
+    // Zero returns empty
+    assert_eq!(reader.peek_behind(0), &[]);
+
+    // Peek behind doesn't change state — repeated calls return the same data
+    assert_eq!(reader.peek_behind(7), b"Hello, ");
 }
 
 // -----------------------------------------------------------------------------
@@ -327,3 +392,191 @@ fn test_reader_bufread_fill_buf() {
  * So testing is deferred to the buffers tests
  * There's no need to test this method twice after all
  */
+
+// -----------------------------------------------------------------------------
+// Reader - Fill Methods
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_reader_fill_amount() {
+    // Basic: read a specific amount from a reader with enough data
+    let data = vec![0u8; 3 * CHUNK_SIZE];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_amount(3 * CHUNK_SIZE).unwrap();
+
+    assert!(bytes_read >= 3 * CHUNK_SIZE);
+    assert!(reader.buffer.len() >= 3 * CHUNK_SIZE);
+
+    // EOF: request more bytes than available
+    let data = b"short";
+    let cur = Cursor::new(data.as_slice());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_amount(1000).unwrap();
+
+    assert_eq!(bytes_read, 5);
+    assert_eq!(reader.buffer.len(), 5);
+
+    // Exceeds max_capacity: should return an error
+    let data = vec![0u8; 4 * CHUNK_SIZE];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::builder(cur)
+        .max_capacity(2 * CHUNK_SIZE)
+        .build();
+    let err = reader.fill_amount(3 * CHUNK_SIZE).unwrap_err();
+
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn test_reader_fill_exact() {
+    // Basic: read exactly N bytes
+    let data = vec![42u8; 100];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_exact(100).unwrap();
+
+    assert_eq!(reader.buffer.len(), 100);
+    assert!(reader.buffer.buf().iter().all(|&b| b == 42));
+
+    // EOF: request more than available
+    let data = b"short";
+    let cur = Cursor::new(data.as_slice());
+    let mut reader = Reader::new(cur);
+    let err = reader.fill_exact(1000).unwrap_err();
+
+    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+
+    // Exceeds max_capacity: should return an error
+    let data = vec![0u8; 4 * CHUNK_SIZE];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::builder(cur)
+        .max_capacity(2 * CHUNK_SIZE)
+        .build();
+    let err = reader.fill_exact(3 * CHUNK_SIZE).unwrap_err();
+
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn test_reader_fill_to_end() {
+    // Basic: read all data from a small reader
+    let data = vec![42u8; 100];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_to_end().unwrap();
+
+    assert_eq!(bytes_read, 100);
+    assert_eq!(reader.buffer.len(), 100);
+
+    // Empty reader
+    let cur: Cursor<&[u8]> = Cursor::new(b"");
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_to_end().unwrap();
+
+    assert_eq!(bytes_read, 0);
+
+    // Capped: data larger than max_capacity, reading should stop at the cap
+    let data = vec![0u8; 4 * CHUNK_SIZE];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::builder(cur)
+        .max_capacity(2 * CHUNK_SIZE)
+        .build();
+    let bytes_read = reader.fill_to_end().unwrap();
+
+    // Should have read up to the cap, not all data
+    assert_eq!(reader.buffer.cap(), 2 * CHUNK_SIZE);
+    assert!(bytes_read <= 2 * CHUNK_SIZE);
+    assert!(reader.buffer.len() <= 2 * CHUNK_SIZE);
+}
+
+#[test]
+fn test_reader_fill_until() {
+    // Delimiter found
+    let cur = Cursor::new(b"key=value\nother".as_slice());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_until(b'\n').unwrap();
+
+    assert!(bytes_read > 0);
+    assert!(reader.buffer.buf()[..reader.buffer.len()].contains(&b'\n'));
+
+    // Delimiter not found, EOF
+    let cur = Cursor::new(b"no newline here".as_slice());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_until(b'\n').unwrap();
+
+    assert_eq!(bytes_read, 15);
+    assert!(!reader.buffer.buf()[..reader.buffer.len()].contains(&b'\n'));
+
+    // Delimiter not found, capped
+    let data = vec![b'x'; 4 * CHUNK_SIZE];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::builder(cur)
+        .max_capacity(2 * CHUNK_SIZE)
+        .build();
+    let bytes_read = reader.fill_until(b'\n').unwrap();
+
+    assert!(bytes_read <= 2 * CHUNK_SIZE);
+    assert!(reader.buffer.len() <= 2 * CHUNK_SIZE);
+}
+
+#[test]
+fn test_reader_fill_until_char() {
+    // Delimiter found (multi-byte UTF-8)
+    let cur = Cursor::new("Hello, 世界!".as_bytes());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_until_char('界').unwrap();
+
+    assert!(bytes_read > 0);
+
+    // Delimiter not found, EOF
+    let cur = Cursor::new("no match".as_bytes());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_until_char('界').unwrap();
+
+    assert_eq!(bytes_read, 8);
+
+    // Delimiter not found, capped
+    let data = "x".repeat(4 * CHUNK_SIZE);
+    let cur = Cursor::new(data.as_bytes().to_vec());
+    let mut reader = Reader::builder(cur)
+        .max_capacity(2 * CHUNK_SIZE)
+        .build();
+    let bytes_read = reader.fill_until_char('界').unwrap();
+
+    assert!(bytes_read <= 2 * CHUNK_SIZE);
+}
+
+#[test]
+fn test_reader_fill_until_str() {
+    // Needle found
+    let cur = Cursor::new(b"Hello, World!END more data".as_slice());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_until_str("END").unwrap();
+
+    assert!(bytes_read > 0);
+
+    // Needle not found, EOF
+    let cur = Cursor::new(b"no match here".as_slice());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_until_str("END").unwrap();
+
+    assert_eq!(bytes_read, 13);
+
+    // Needle not found, capped
+    let data = vec![b'x'; 4 * CHUNK_SIZE];
+    let cur = Cursor::new(data);
+    let mut reader = Reader::builder(cur)
+        .max_capacity(2 * CHUNK_SIZE)
+        .build();
+    let bytes_read = reader.fill_until_str("END").unwrap();
+
+    assert!(bytes_read <= 2 * CHUNK_SIZE);
+
+    // Empty needle returns immediately
+    let cur = Cursor::new(b"anything".as_slice());
+    let mut reader = Reader::new(cur);
+    let bytes_read = reader.fill_until_str("").unwrap();
+
+    assert_eq!(bytes_read, 0);
+}
