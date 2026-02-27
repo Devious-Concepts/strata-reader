@@ -353,6 +353,28 @@ impl Buffer {
         self.pos = cmp::min(self.pos + amt, self.len);
     }
 
+    /// Moves the read position backward by `amt` bytes, clamped to 0.
+    ///
+    /// This is the inverse of [`consume()`](Self::consume): it makes previously
+    /// consumed (but still retained) bytes available again.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new(b"Hello")).unwrap();
+    /// buffer.consume(3);
+    /// assert_eq!(buffer.pos(), 3);
+    /// buffer.unconsume(2);
+    /// assert_eq!(buffer.pos(), 1);
+    /// ```
+    #[inline]
+    pub fn unconsume(&mut self, amt: usize) {
+        self.pos = self.pos.saturating_sub(amt);
+    }
+
     /// Removes consumed bytes from the buffer by moving unconsumed data to the start.
     ///
     /// Moves unconsumed data to the beginning of the buffer using `copy_within` and resets the

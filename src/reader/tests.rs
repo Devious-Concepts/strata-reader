@@ -13,7 +13,7 @@
 
 use super::*;
 use crate::constants::CHUNK_SIZE;
-use std::io::{Cursor, IoSliceMut, Read};
+use std::io::{Cursor, IoSliceMut, Read, Seek, SeekFrom};
 
 // -----------------------------------------------------------------------------
 // Reader - Creation
@@ -579,4 +579,241 @@ fn test_reader_fill_until_str() {
     let bytes_read = reader.fill_until_str("").unwrap();
 
     assert_eq!(bytes_read, 0);
+}
+
+// -----------------------------------------------------------------------------
+// Reader - Accessor Methods
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_reader_get_ref() {
+    let cur = Cursor::new("Hello");
+    let reader = Reader::new(cur);
+
+    // get_ref should return the inner reader
+    let inner: &Cursor<&str> = reader.get_ref();
+    assert_eq!(inner.position(), 0);
+}
+
+#[test]
+fn test_reader_get_mut() {
+    let cur = Cursor::new("Hello");
+    let mut reader = Reader::new(cur);
+
+    // get_mut should allow mutating the inner reader
+    reader.get_mut().set_position(3);
+    assert_eq!(reader.get_ref().position(), 3);
+}
+
+#[test]
+fn test_reader_into_inner() {
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+
+    // Fill the buffer — the cursor advances past all data
+    reader.fill_amount(data.len()).unwrap();
+
+    // Recover the inner reader
+    let inner = reader.into_inner();
+    assert_eq!(inner.position(), data.len() as u64);
+}
+
+#[test]
+fn test_reader_max_capacity() {
+    // Default max capacity
+    let cur: Cursor<&str> = Cursor::default();
+    let reader = Reader::new(cur);
+    assert_eq!(reader.max_capacity(), DEFAULT_MAX_SIZE);
+
+    // Custom max capacity
+    let cur: Cursor<&str> = Cursor::default();
+    let reader = Reader::builder(cur)
+        .max_capacity(4 * CHUNK_SIZE)
+        .build();
+    assert_eq!(reader.max_capacity(), 4 * CHUNK_SIZE);
+}
+
+// -----------------------------------------------------------------------------
+// Reader - Debug
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_reader_debug() {
+    let cur = Cursor::new("Hello");
+    let reader = Reader::new(cur);
+    let debug = format!("{reader:?}");
+
+    // Should contain the struct name and reader info
+    assert!(debug.contains("Reader"));
+    assert!(debug.contains("reader"));
+    assert!(debug.contains("buffer"));
+
+    // With data in the buffer
+    let cur = Cursor::new("Hello, World!");
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(13).unwrap();
+    let debug = format!("{reader:?}");
+
+    // Buffer field should show unconsumed/capacity
+    assert!(debug.contains("13/"));
+
+    // After consuming some data
+    reader.consume(5);
+    let debug = format!("{reader:?}");
+    assert!(debug.contains("8/"));
+}
+
+// -----------------------------------------------------------------------------
+// Reader - Seek
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_reader_seek_start() {
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+
+    // Fill and consume some data
+    reader.fill_amount(data.len()).unwrap();
+    reader.consume(5);
+    assert_eq!(reader.buffer.len(), data.len());
+
+    // Seek to start should invalidate the buffer
+    let pos = reader.seek(SeekFrom::Start(0)).unwrap();
+    assert_eq!(pos, 0);
+    assert_eq!(reader.buffer.len(), 0);
+}
+
+#[test]
+fn test_reader_seek_end() {
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+
+    // Fill data
+    reader.fill_amount(data.len()).unwrap();
+    assert_eq!(reader.buffer.len(), data.len());
+
+    // Seek to end should invalidate the buffer
+    let pos = reader.seek(SeekFrom::End(0)).unwrap();
+    assert_eq!(pos, data.len() as u64);
+    assert_eq!(reader.buffer.len(), 0);
+}
+
+#[test]
+fn test_reader_seek_current() {
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+
+    // Fill and consume some data
+    reader.fill_amount(data.len()).unwrap();
+    reader.consume(5);
+
+    // Seek forward from current — adjusts for unconsumed bytes
+    let pos = reader.seek(SeekFrom::Current(2)).unwrap();
+    assert_eq!(pos, 7); // Logical position was 5, +2 = 7
+    assert_eq!(reader.buffer.len(), 0); // Buffer invalidated
+
+    // Read to verify we're at the right position
+    let mut buf = [0u8; 6];
+    reader.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"World!");
+}
+
+#[test]
+fn test_reader_seek_current_backward() {
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+
+    // Read all data, then seek backward
+    reader.fill_amount(data.len()).unwrap();
+    reader.consume(data.len());
+
+    let pos = reader.seek(SeekFrom::Current(-6)).unwrap();
+    assert_eq!(pos, 7);
+    assert_eq!(reader.buffer.len(), 0); // Buffer invalidated
+
+    // Read to verify position
+    let mut buf = [0u8; 6];
+    reader.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"World!");
+}
+
+// -----------------------------------------------------------------------------
+// Reader - seek_relative
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_reader_seek_relative() {
+    // Forward within unconsumed data — no I/O, just advances pos
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+    assert_eq!(reader.buffer.pos(), 0);
+
+    reader.seek_relative(5).unwrap();
+    assert_eq!(reader.buffer.pos(), 5);
+    assert_eq!(reader.buffer.len(), data.len()); // Buffer NOT invalidated
+    assert_eq!(reader.peek(8), b", World!");
+
+    // Backward within retained consumed data — no I/O
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+    reader.consume(7);
+    assert_eq!(reader.buffer.pos(), 7);
+
+    reader.seek_relative(-5).unwrap();
+    assert_eq!(reader.buffer.pos(), 2);
+    assert_eq!(reader.buffer.len(), data.len()); // Buffer NOT invalidated
+    assert_eq!(reader.peek(5), b"llo, ");
+
+    // Forward beyond buffered data — falls through to inner seek
+    let data = "Hello, World!";
+    let mut cur = Cursor::new(data);
+    cur.set_position(5); // Simulate having read 5 bytes already
+    let mut reader = Reader::new(cur);
+    reader.buffer.inject_test_data(&data.as_bytes()[..5]);
+    reader.consume(3); // Logical position is 3, unconsumed = 2
+
+    reader.seek_relative(8).unwrap();
+    assert_eq!(reader.buffer.len(), 0); // Buffer invalidated
+    let mut buf = [0u8; 2];
+    reader.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"d!"); // Logical was 3, +8 = 11
+
+    // Backward beyond retained consumed data — falls through to inner seek
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+    reader.consume(10);
+    reader.compact(); // Drop retained consumed data
+    assert_eq!(reader.buffer.pos(), 0);
+    reader.consume(1);
+    assert_eq!(reader.buffer.pos(), 1);
+
+    // Only 1 byte retained, seeking back by 2 exceeds it → fallback
+    // Logical pos is 11, seek by -2 → logical 9
+    reader.seek_relative(-2).unwrap();
+    assert_eq!(reader.buffer.len(), 0); // Buffer invalidated
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"rld!");
+
+    // Zero offset — in-buffer fast path, no-op
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+    reader.consume(5);
+
+    reader.seek_relative(0).unwrap();
+    assert_eq!(reader.buffer.pos(), 5);
+    assert_eq!(reader.buffer.len(), data.len()); // Buffer NOT invalidated
 }

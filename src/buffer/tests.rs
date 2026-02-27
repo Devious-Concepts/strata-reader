@@ -283,6 +283,32 @@ fn test_buffer_consume() {
 }
 
 #[test]
+fn test_buffer_unconsume() {
+    let mut buffer = Buffer::new();
+
+    // Unconsuming on an empty buffer should be a no-op
+    buffer.unconsume(100);
+    assert_eq!(buffer.pos(), 0);
+
+    // Set up some data and consume part of it
+    buffer.len = 100;
+    buffer.consume(50);
+    assert_eq!(buffer.pos(), 50);
+
+    // Unconsume within retained data
+    buffer.unconsume(20);
+    assert_eq!(buffer.pos(), 30);
+
+    // Unconsume more than consumed — clamps to 0
+    buffer.unconsume(100);
+    assert_eq!(buffer.pos(), 0);
+
+    // Unconsume when already at 0 — no-op
+    buffer.unconsume(50);
+    assert_eq!(buffer.pos(), 0);
+}
+
+#[test]
 fn test_buffer_compact() {
     let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE); // Power-of-2 multiple
 

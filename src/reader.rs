@@ -1,12 +1,31 @@
 use crate::DynamicRead;
 use crate::buffer::Buffer;
 use crate::constants::DEFAULT_MAX_SIZE;
-use std::io::{self, BufRead, Read};
+use std::fmt;
+use std::io::{self, BufRead, Read, Seek, SeekFrom};
 
 pub struct Reader<R: ?Sized> {
     buffer: Buffer,
     max_capacity: usize,
     reader: R,
+}
+
+#[expect(clippy::arithmetic_side_effects, reason = "Safe by buffer invariant")]
+impl<R: fmt::Debug + ?Sized> fmt::Debug for Reader<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Reader")
+            .field("reader", &&self.reader)
+            .field("max_capacity", &self.max_capacity)
+            .field(
+                "buffer",
+                &format_args!(
+                    "{}/{}",
+                    self.buffer.len() - self.buffer.pos(),
+                    self.buffer.cap()
+                ),
+            )
+            .finish()
+    }
 }
 
 impl<R: Read> Reader<R> {
@@ -70,7 +89,38 @@ impl<R: Read> ReaderBuilder<R> {
     }
 }
 
+impl<R> Reader<R> {
+    /// Unwraps this `Reader`, returning the underlying reader.
+    ///
+    /// Any buffered data is discarded.
+    #[inline]
+    pub fn into_inner(self) -> R {
+        self.reader
+    }
+}
+
 impl<R: ?Sized> Reader<R> {
+    /// Returns a reference to the underlying reader.
+    #[inline]
+    pub fn get_ref(&self) -> &R {
+        &self.reader
+    }
+
+    /// Returns a mutable reference to the underlying reader.
+    ///
+    /// It is inadvisable to directly read from the underlying reader, as data
+    /// that has already been buffered will be lost.
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.reader
+    }
+
+    /// Returns the maximum buffer capacity configured for this reader.
+    #[inline]
+    pub fn max_capacity(&self) -> usize {
+        self.max_capacity
+    }
+
     /// Returns up to `n` unconsumed bytes without advancing the read position.
     ///
     /// If fewer than `n` unconsumed bytes are available, the returned slice
@@ -413,6 +463,66 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
         self.buffer
             .fill_while(&mut self.reader, predicate, Some(self.max_capacity))
             .map(|r| r.count())
+    }
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_wrap,
+    reason = "len - pos safe by buffer invariant; usize→i64 cast safe: buffer size ≤ max_capacity ≪ i64::MAX"
+)]
+impl<R: Read + Seek + ?Sized> Seek for Reader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let result = match pos {
+            SeekFrom::Current(n) => {
+                let unconsumed = (self.buffer.len() - self.buffer.pos()) as i64;
+                let adjusted = n.checked_sub(unconsumed).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "seek offset overflow")
+                })?;
+                self.reader.seek(SeekFrom::Current(adjusted))?
+            }
+            _ => self.reader.seek(pos)?,
+        };
+        self.buffer.clear();
+        Ok(result)
+    }
+}
+
+impl<R: Read + Seek + ?Sized> Reader<R> {
+    /// Seeks relative to the current position, with an in-buffer fast path.
+    ///
+    /// If the target position falls within the currently buffered data — either
+    /// forward into unconsumed bytes or backward into retained consumed bytes —
+    /// the seek is performed without any I/O. Otherwise, the seek is delegated
+    /// to the underlying reader and the buffer is invalidated.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "len - pos safe by buffer invariant; narrowing casts guarded by u64 range checks against buffer-sized values"
+    )]
+    pub fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
+        let pos = self.buffer.pos();
+        let len = self.buffer.len();
+
+        if offset >= 0 {
+            let offset_u64 = offset as u64;
+            if offset_u64 <= (len - pos) as u64 {
+                self.buffer.consume(offset_u64 as usize);
+                return Ok(());
+            }
+        } else {
+            let back_u64 = offset.unsigned_abs();
+            if back_u64 <= pos as u64 {
+                self.buffer.unconsume(back_u64 as usize);
+                return Ok(());
+            }
+        }
+
+        self.seek(SeekFrom::Current(offset))?;
+        Ok(())
     }
 }
 
