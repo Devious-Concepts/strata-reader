@@ -13,7 +13,23 @@
 
 use super::*;
 use crate::constants::{CHUNK_SIZE, PRACTICAL_MAX_SIZE};
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, Read};
+
+/// A reader that returns `Interrupted` once, then delegates to inner.
+pub(crate) struct InterruptOnceReader<R> {
+    pub(crate) inner: R,
+    pub(crate) interrupted: bool,
+}
+
+impl<R: Read> Read for InterruptOnceReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.interrupted {
+            self.interrupted = true;
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
+        }
+        self.inner.read(buf)
+    }
+}
 
 impl Buffer {
     /// Test helper to inject data directly into the buffer.
@@ -816,6 +832,31 @@ fn test_buffer_fill_exact() {
  * tests for `shrink_targeted` have already been written above.
  */
 
+// -----------------------------------------------------------------------------
+// Buffer - read_once
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_buffer_read_once() {
+    // read_once is private, so we test it through fill_to_end (simplest caller).
+    // The key behavior to verify is the Interrupted retry loop.
+
+    // Interrupted retry — read_once retries on Interrupted, then succeeds
+    let mut buffer = Buffer::new();
+    let reader = InterruptOnceReader {
+        inner: Cursor::new("Hello!"),
+        interrupted: false,
+    };
+    let read = buffer.fill_to_end(reader).unwrap();
+
+    assert_eq!(read, 6);
+    assert_eq!(buffer.buf(), b"Hello!");
+}
+
+// -----------------------------------------------------------------------------
+// Buffer - fill_to_end
+// -----------------------------------------------------------------------------
+
 #[test]
 fn test_buffer_fill_to_end() {
     let mut buffer = Buffer::new();
@@ -901,9 +942,9 @@ fn test_buffer_fill_to_end() {
     assert_eq!(buffer.cap(), 3 * CHUNK_SIZE);
 }
 
-/* Note: `fill_to_end` calls `shrink_targeted` using whatever the starting
- * capacity is as its target, so there is no reason to test shrinking again as
- * tests for `shrink_targeted` have already been written above.
+/* Note: `fill_to_end` delegates reading to `read_once` and calls
+ * `shrink_targeted` using whatever the starting capacity is as its target,
+ * so there is no reason to test those again as they have already been tested.
  */
 
 // -----------------------------------------------------------------------------
@@ -1051,9 +1092,9 @@ fn test_buffer_fill_while() {
     assert_eq!(buffer.buf(), b"has a space here");
 }
 
-/* Note: `fill_while` calls `shrink_targeted` using whatever the starting
- * capacity is as its target, so there is no reason to test shrinking again as
- * tests for `shrink_targeted` have already been written above.
+/* Note: `fill_while` delegates reading to `read_once` and calls
+ * `shrink_targeted` using whatever the starting capacity is as its target,
+ * so there is no reason to test those again as they have already been tested.
  */
 
 // -----------------------------------------------------------------------------
@@ -1163,10 +1204,9 @@ fn test_buffer_fill_until() {
     assert_eq!(buffer.buf(), b"already\nhere");
 }
 
-/* Note: `fill_until` has its own loop but calls `shrink_targeted` using
- * whatever the starting capacity is as its target, so there is no reason
- * to test shrinking again as tests for `shrink_targeted` have already
- * been written above.
+/* Note: `fill_until` delegates reading to `read_once` and calls
+ * `shrink_targeted` using whatever the starting capacity is as its target,
+ * so there is no reason to test those again as they have already been tested.
  */
 
 // -----------------------------------------------------------------------------
@@ -1369,10 +1409,9 @@ fn test_buffer_fill_until_str() {
     assert_eq!(buffer.buf(), b"Hello, World!END more data");
 }
 
-/* Note: `fill_until_str` has its own loop but calls `shrink_targeted` using
- * whatever the starting capacity is as its target, so there is no reason
- * to test shrinking again as tests for `shrink_targeted` have already
- * been written above.
+/* Note: `fill_until_str` delegates reading to `read_once` and calls
+ * `shrink_targeted` using whatever the starting capacity is as its target,
+ * so there is no reason to test those again as they have already been tested.
  */
 
 // -----------------------------------------------------------------------------

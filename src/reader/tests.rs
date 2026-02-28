@@ -12,6 +12,7 @@
 )]
 
 use super::*;
+use crate::buffer::tests::InterruptOnceReader;
 use crate::constants::CHUNK_SIZE;
 use std::io::{Cursor, IoSliceMut, Read, Seek, SeekFrom};
 
@@ -248,6 +249,22 @@ fn test_reader_read_vectored() {
     assert_eq!(len, data.len());
     assert_eq!(&buf[..13], data.as_bytes());
     assert_eq!(reader.buffer.pos(), 0); // Confirms delegation path
+
+    // With partially-consumed buffer — only unconsumed data should be returned
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+    reader.consume(7); // Consume "Hello, "
+
+    let mut buf1 = [0u8; 3];
+    let mut buf2 = [0u8; 10];
+    let mut buffers = [IoSliceMut::new(&mut buf1), IoSliceMut::new(&mut buf2)];
+    let len = reader.read_vectored(&mut buffers).unwrap();
+
+    assert_eq!(len, 6);
+    assert_eq!(&buf1, b"Wor");
+    assert_eq!(&buf2[..3], b"ld!");
 }
 
 #[test]
@@ -309,6 +326,25 @@ fn test_reader_read_to_string() {
 
     // We should get an invalid data error
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+    // Non-empty String + valid UTF-8 reader → content appended (Path B)
+    let cur = Cursor::new("World!");
+    let mut reader = Reader::new(cur);
+    let mut result = String::from("Hello, ");
+    let len = reader.read_to_string(&mut result).unwrap();
+
+    assert_eq!(len, 6);
+    assert_eq!(result, "Hello, World!");
+
+    // Non-empty String + invalid UTF-8 → error, original content preserved (Path B)
+    let data = vec![0xFF, 0xFE, 0xFD]; // Invalid UTF-8
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    let mut result = String::from("keep me");
+    let err = reader.read_to_string(&mut result).unwrap_err();
+
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(result, "keep me"); // Original content preserved
 }
 
 #[test]
@@ -353,6 +389,18 @@ fn test_reader_read_exact() {
     // Should successfully read all 13 bytes across buffer + inner reader
     assert_eq!(&buf, b"Hello, World!");
     assert_eq!(reader.buffer.len(), 0); // Confirms the buffer was cleared
+
+    // Interrupted retry — reader returns Interrupted once, then succeeds
+    let inner = Cursor::new(b"Hello, World!");
+    let reader = InterruptOnceReader {
+        inner,
+        interrupted: false,
+    };
+    let mut reader = Reader::new(reader);
+    let mut buf = [0u8; 13];
+    reader.read_exact(&mut buf).unwrap();
+
+    assert_eq!(&buf, b"Hello, World!");
 }
 
 // -----------------------------------------------------------------------------
@@ -606,6 +654,10 @@ fn test_reader_get_mut() {
 }
 
 #[test]
+#[expect(
+    clippy::as_conversions,
+    reason = "test-only usize→u64 that cannot overflow"
+)]
 fn test_reader_into_inner() {
     let data = "Hello, World!";
     let cur = Cursor::new(data);
@@ -686,6 +738,10 @@ fn test_reader_seek_start() {
 }
 
 #[test]
+#[expect(
+    clippy::as_conversions,
+    reason = "test-only usize→u64 that cannot overflow"
+)]
 fn test_reader_seek_end() {
     let data = "Hello, World!";
     let cur = Cursor::new(data);
@@ -720,6 +776,15 @@ fn test_reader_seek_current() {
     let mut buf = [0u8; 6];
     reader.read_exact(&mut buf).unwrap();
     assert_eq!(&buf, b"World!");
+
+    // Overflow: i64::MIN with unconsumed data would overflow in checked_sub → InvalidInput
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.fill_amount(data.len()).unwrap();
+
+    let err = reader.seek(SeekFrom::Current(i64::MIN)).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 }
 
 #[test]
