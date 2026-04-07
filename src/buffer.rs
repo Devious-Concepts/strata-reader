@@ -26,7 +26,7 @@
 //! assert_eq!(&buffer.buf()[buffer.pos()..], b"World!");
 //! ```
 
-use crate::constants::{CHUNK_SIZE, THEORETICAL_MAX_SIZE};
+use crate::constants::{CHUNK_SIZE, MAX_EXPONENTIAL_CAPACITY, MAX_SUPPORTED_CAPACITY};
 use std::cmp;
 use std::io::{self, Read};
 
@@ -390,7 +390,7 @@ impl Buffer {
     ///
     /// This method implements the linear shrinking strategy used by the buffer. It rounds down
     /// the given capacity to the nearest multiple of [`CHUNK_SIZE`], with a minimum of
-    /// [`CHUNK_SIZE`] and a maximum of [`THEORETICAL_MAX_SIZE`].
+    /// [`CHUNK_SIZE`] and a maximum supported capacity.
     ///
     /// # Examples
     ///
@@ -408,7 +408,7 @@ impl Buffer {
     #[inline]
     #[expect(clippy::arithmetic_side_effects, reason = "Safe by bounds checks")]
     pub fn cap_down(capacity: usize) -> usize {
-        // Bounds checks clamp the result to `CHUNK_SIZE..=THEORETICAL_MAX_SIZE`
+        // Bounds checks clamp the result to the supported capacity range
 
         // Min bounds check
         if capacity <= CHUNK_SIZE {
@@ -416,8 +416,8 @@ impl Buffer {
         }
 
         // Max bounds check
-        if capacity >= THEORETICAL_MAX_SIZE {
-            return THEORETICAL_MAX_SIZE;
+        if capacity >= MAX_SUPPORTED_CAPACITY {
+            return MAX_SUPPORTED_CAPACITY;
         }
 
         // Round down `capacity` to the nearest multiple of `CHUNK_SIZE`
@@ -428,7 +428,7 @@ impl Buffer {
     ///
     /// This method implements the exponential growth strategy used by the buffer. It rounds up
     /// the given capacity to the nearest power-of-two multiple of [`CHUNK_SIZE`], with a minimum of
-    /// [`CHUNK_SIZE`] and a maximum of [`THEORETICAL_MAX_SIZE`].
+    /// [`CHUNK_SIZE`] and saturation at the implementation's supported maximum.
     ///
     /// # Examples
     ///
@@ -448,11 +448,11 @@ impl Buffer {
     #[inline]
     #[expect(clippy::arithmetic_side_effects, reason = "Safe by bounds checks")]
     pub fn cap_up(capacity: usize) -> usize {
-        // Bounds checks clamp the result to `CHUNK_SIZE..=THEORETICAL_MAX_SIZE`
+        // Bounds checks clamp the result to the supported capacity range
 
         // Max bounds check
-        if capacity > THEORETICAL_MAX_SIZE >> 1 {
-            return THEORETICAL_MAX_SIZE;
+        if capacity > MAX_EXPONENTIAL_CAPACITY {
+            return MAX_SUPPORTED_CAPACITY;
         }
 
         // Min bounds check
@@ -468,7 +468,7 @@ impl Buffer {
     ///
     /// This method provides linear capacity rounding, for precise capacity allocation. It rounds up
     /// the given capacity to the nearest multiple of [`CHUNK_SIZE`], with a minimum of
-    /// [`CHUNK_SIZE`] and a maximum of [`THEORETICAL_MAX_SIZE`].
+    /// [`CHUNK_SIZE`] and a maximum supported capacity.
     ///
     /// # Examples
     ///
@@ -487,11 +487,11 @@ impl Buffer {
     #[inline]
     #[expect(clippy::arithmetic_side_effects, reason = "Safe by bounds checks")]
     pub fn cap_up_linear(capacity: usize) -> usize {
-        // Bounds checks clamp the result to `CHUNK_SIZE..=THEORETICAL_MAX_SIZE`
+        // Bounds checks clamp the result to the supported capacity range
 
         // Max bounds check
-        if capacity > THEORETICAL_MAX_SIZE - CHUNK_SIZE {
-            return THEORETICAL_MAX_SIZE;
+        if capacity > MAX_SUPPORTED_CAPACITY - CHUNK_SIZE {
+            return MAX_SUPPORTED_CAPACITY;
         }
 
         // Min bounds check
@@ -505,7 +505,7 @@ impl Buffer {
 
     /// Grows the buffer capacity to the next power-of-two multiple of [`CHUNK_SIZE`].
     ///
-    /// The capacity grows exponentially up to a maximum of [`THEORETICAL_MAX_SIZE`].
+    /// The capacity grows exponentially until it reaches the supported maximum.
     ///
     /// # Examples
     ///
@@ -527,7 +527,7 @@ impl Buffer {
     ///
     /// If the buffer's current capacity already meets or exceeds `target`, no operation is
     /// performed. Otherwise, grows to the nearest power-of-two multiple of [`CHUNK_SIZE`] that
-    /// accommodates `target`, up to a maximum of [`THEORETICAL_MAX_SIZE`].
+    /// accommodates `target`, saturating at the supported maximum.
     ///
     /// # Examples
     ///
@@ -556,7 +556,7 @@ impl Buffer {
     ///
     /// If the buffer's current capacity already meets or exceeds `target`, no operation is
     /// performed. Otherwise, grows to the nearest multiple of [`CHUNK_SIZE`] that accommodates
-    /// `target`, up to a maximum of [`THEORETICAL_MAX_SIZE`].
+    /// `target`, saturating at the supported maximum.
     ///
     /// # Examples
     ///
@@ -726,7 +726,7 @@ impl Buffer {
     #[expect(clippy::arithmetic_side_effects, reason = "Safe by overflow check")]
     pub fn fill_amount(&mut self, mut reader: impl Read, amt: usize) -> io::Result<FillResult> {
         // Check if the requested amount exceeds what we can possibly accommodate
-        if amt > THEORETICAL_MAX_SIZE - self.len {
+        if amt > MAX_SUPPORTED_CAPACITY - self.len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "requested amount exceeds maximum buffer capacity",
@@ -790,7 +790,7 @@ impl Buffer {
     )]
     pub fn fill_exact(&mut self, mut reader: impl Read, amt: usize) -> io::Result<()> {
         // Check if the requested amount exceeds what we can possibly accommodate
-        if amt > THEORETICAL_MAX_SIZE - self.len {
+        if amt > MAX_SUPPORTED_CAPACITY - self.len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "requested amount exceeds maximum buffer capacity",

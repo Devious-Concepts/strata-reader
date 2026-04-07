@@ -7,9 +7,10 @@
 //! The following mathematical relationships must hold between the constants:
 //!
 //! - [`CHUNK_SIZE`] is a power of 2 and at least 8 KiB
-//! - [`DEFAULT_MAX_SIZE`] and [`THEORETICAL_MAX_SIZE`] are both power-of-two multiples of
-//!   `CHUNK_SIZE`
-//! - `CHUNK_SIZE < DEFAULT_MAX_SIZE < THEORETICAL_MAX_SIZE`
+//! - [`DEFAULT_MAX_CAPACITY`] is a power-of-two multiple of `CHUNK_SIZE`
+//! - [`MAX_SUPPORTED_CAPACITY`] is a multiple of `CHUNK_SIZE`
+//! - [`MAX_SUPPORTED_CAPACITY`] is the largest aligned capacity supported by the implementation
+//! - `CHUNK_SIZE < DEFAULT_MAX_CAPACITY < MAX_SUPPORTED_CAPACITY`
 
 /// Buffer chunk size. (8 KiB)
 ///
@@ -19,19 +20,25 @@
 /// Buffer capacity is always a multiple of this value, making it also the minimum possible size.
 pub const CHUNK_SIZE: usize = 1 << 13; // 2^13 = 8 KiB
 
-/// Default maximum buffer size (256 MiB) when no limit is specified.
+/// Default maximum buffer capacity (256 MiB) when no limit is specified.
 ///
 /// Provides a reasonable upper bound for most use cases while preventing runaway memory usage.
-pub const DEFAULT_MAX_SIZE: usize = CHUNK_SIZE * (1 << 15); // CHUNK_SIZE * 2^15 = 256 MiB
+pub const DEFAULT_MAX_CAPACITY: usize = CHUNK_SIZE * (1 << 15); // CHUNK_SIZE * 2^15 = 256 MiB
 
-/// Theoretical maximum buffer size.
+/// Largest aligned capacity supported by the implementation.
 ///
-/// This is a hardware/platform limit. Used to have an upper bound against unreasonable user input.
-/// Its value is the largest power-of-two multiple of [`CHUNK_SIZE`] that fits in usize,
-/// representing the theoretical maximum reachable through exponential growth.
+/// This is an internal technical ceiling derived from the backing `Vec<u8>` allocation model,
+/// rounded down from the platform's signed-index ceiling to a [`CHUNK_SIZE`] multiple.
 ///
-/// Equals `usize::MAX / 2 + 1` just expressed in terms of `CHUNK_SIZE`.
-pub const THEORETICAL_MAX_SIZE: usize = CHUNK_SIZE * (1 << CHUNK_SIZE.leading_zeros());
+/// It is not a sane operating target or public tuning value.
+pub(crate) const MAX_SUPPORTED_CAPACITY: usize = ((usize::MAX >> 1) / CHUNK_SIZE) * CHUNK_SIZE;
+
+/// Largest power-of-two multiple of [`CHUNK_SIZE`] below the allocator ceiling.
+///
+/// Used internally to determine when exponential growth must saturate to
+/// [`MAX_SUPPORTED_CAPACITY`] instead of rounding to the next power-of-two capacity.
+pub(crate) const MAX_EXPONENTIAL_CAPACITY: usize =
+    ((MAX_SUPPORTED_CAPACITY / CHUNK_SIZE).next_power_of_two() >> 1) * CHUNK_SIZE;
 
 #[cfg(test)]
 mod tests;

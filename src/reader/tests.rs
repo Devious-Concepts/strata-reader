@@ -22,7 +22,7 @@ fn test_reader_new() {
 
     // Check internal state matches expectations
     assert_eq!(reader.buffer, Buffer::default());
-    assert_eq!(reader.max_capacity, DEFAULT_MAX_SIZE);
+    assert_eq!(reader.max_capacity, DEFAULT_MAX_CAPACITY);
     assert_eq!(reader.reader, Cursor::default());
 }
 
@@ -50,7 +50,7 @@ fn test_reader_builder() {
     // Check internal state matches expectations
     assert_eq!(reader.buffer, Buffer::with_capacity(initial_capacity));
     assert_eq!(reader.buffer.cap(), 3 * CHUNK_SIZE);
-    assert_eq!(reader.max_capacity, DEFAULT_MAX_SIZE);
+    assert_eq!(reader.max_capacity, DEFAULT_MAX_CAPACITY);
     assert_eq!(reader.reader, Cursor::default());
 
     // Create with both initial_capacity and max_capacity
@@ -669,7 +669,7 @@ fn test_reader_max_capacity() {
     // Default max capacity
     let cur: Cursor<&str> = Cursor::default();
     let reader = Reader::new(cur);
-    assert_eq!(reader.max_capacity(), DEFAULT_MAX_SIZE);
+    assert_eq!(reader.max_capacity(), DEFAULT_MAX_CAPACITY);
 
     // Custom max capacity
     let cur: Cursor<&str> = Cursor::default();

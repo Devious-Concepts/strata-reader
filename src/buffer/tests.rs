@@ -7,7 +7,7 @@
 )]
 
 use super::*;
-use crate::constants::{CHUNK_SIZE, THEORETICAL_MAX_SIZE};
+use crate::constants::{CHUNK_SIZE, MAX_EXPONENTIAL_CAPACITY, MAX_SUPPORTED_CAPACITY};
 use std::io::{self, Cursor, Read};
 
 /// A reader that returns `Interrupted` once, then delegates to inner.
@@ -410,42 +410,46 @@ fn test_buffer_cap_down() {
     assert_eq!(Buffer::cap_down(20 * CHUNK_SIZE + 789), 20 * CHUNK_SIZE);
     assert_eq!(Buffer::cap_down(123 * CHUNK_SIZE + 1234), 123 * CHUNK_SIZE);
     assert_eq!(
-        Buffer::cap_down(THEORETICAL_MAX_SIZE - 1),
-        THEORETICAL_MAX_SIZE - CHUNK_SIZE
+        Buffer::cap_down(MAX_SUPPORTED_CAPACITY - 1),
+        MAX_SUPPORTED_CAPACITY - CHUNK_SIZE
+    );
+    assert_eq!(
+        Buffer::cap_down(MAX_SUPPORTED_CAPACITY),
+        MAX_SUPPORTED_CAPACITY
     );
 
-    /* Sizes above `THEORETICAL_MAX_SIZE` should round down to
-    `THEORETICAL_MAX_SIZE` as that's the max */
-    assert_eq!(Buffer::cap_down(usize::MAX), THEORETICAL_MAX_SIZE);
+    /* Sizes above `MAX_SUPPORTED_CAPACITY` should round down to
+    `MAX_SUPPORTED_CAPACITY` as that's the max */
+    assert_eq!(Buffer::cap_down(usize::MAX), MAX_SUPPORTED_CAPACITY);
     assert_eq!(
-        Buffer::cap_down(THEORETICAL_MAX_SIZE + 1234),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_down(MAX_SUPPORTED_CAPACITY + 1234),
+        MAX_SUPPORTED_CAPACITY
     );
     assert_eq!(
-        Buffer::cap_down(THEORETICAL_MAX_SIZE + 1),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_down(MAX_SUPPORTED_CAPACITY + 1),
+        MAX_SUPPORTED_CAPACITY
     );
 
     // Exact sizes should stay the same
     assert_eq!(Buffer::cap_down(3 * CHUNK_SIZE), 3 * CHUNK_SIZE);
     assert_eq!(
-        Buffer::cap_down(THEORETICAL_MAX_SIZE - CHUNK_SIZE),
-        THEORETICAL_MAX_SIZE - CHUNK_SIZE
+        Buffer::cap_down(MAX_SUPPORTED_CAPACITY - CHUNK_SIZE),
+        MAX_SUPPORTED_CAPACITY - CHUNK_SIZE
     );
 }
 
 #[test]
 fn test_buffer_cap_up() {
-    /* Sizes above `THEORETICAL_MAX_SIZE` should round down to
-    `THEORETICAL_MAX_SIZE` as that's the max */
-    assert_eq!(Buffer::cap_up(usize::MAX), THEORETICAL_MAX_SIZE);
+    /* Sizes above `MAX_SUPPORTED_CAPACITY` should round down to
+    `MAX_SUPPORTED_CAPACITY` as that's the max */
+    assert_eq!(Buffer::cap_up(usize::MAX), MAX_SUPPORTED_CAPACITY);
     assert_eq!(
-        Buffer::cap_up(THEORETICAL_MAX_SIZE + 1234),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_up(MAX_SUPPORTED_CAPACITY + 1234),
+        MAX_SUPPORTED_CAPACITY
     );
     assert_eq!(
-        Buffer::cap_up(THEORETICAL_MAX_SIZE + 1),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_up(MAX_SUPPORTED_CAPACITY + 1),
+        MAX_SUPPORTED_CAPACITY
     );
 
     // Other values should round up to the nearest power-of-2 multiple of `CHUNK_SIZE`
@@ -455,12 +459,12 @@ fn test_buffer_cap_up() {
     assert_eq!(Buffer::cap_up(20 * CHUNK_SIZE - 789), 32 * CHUNK_SIZE);
     assert_eq!(Buffer::cap_up(123 * CHUNK_SIZE - 1234), 128 * CHUNK_SIZE);
     assert_eq!(
-        Buffer::cap_up(THEORETICAL_MAX_SIZE - 1),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_up(MAX_SUPPORTED_CAPACITY - 1),
+        MAX_SUPPORTED_CAPACITY
     );
     assert_eq!(
-        Buffer::cap_up((THEORETICAL_MAX_SIZE >> 1) + 1),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_up(MAX_EXPONENTIAL_CAPACITY + 1),
+        MAX_SUPPORTED_CAPACITY
     );
 
     // Sizes below `CHUNK_SIZE` should round up to `CHUNK_SIZE` as that's the min
@@ -470,23 +474,23 @@ fn test_buffer_cap_up() {
     // Exact sizes should stay the same
     assert_eq!(Buffer::cap_up(4 * CHUNK_SIZE), 4 * CHUNK_SIZE);
     assert_eq!(
-        Buffer::cap_up(THEORETICAL_MAX_SIZE >> 1),
-        THEORETICAL_MAX_SIZE >> 1
+        Buffer::cap_up(MAX_EXPONENTIAL_CAPACITY),
+        MAX_EXPONENTIAL_CAPACITY
     );
 }
 
 #[test]
 fn test_buffer_cap_up_linear() {
-    /* Sizes above `THEORETICAL_MAX_SIZE` should round down to
-    `THEORETICAL_MAX_SIZE` as that's the max */
-    assert_eq!(Buffer::cap_up_linear(usize::MAX), THEORETICAL_MAX_SIZE);
+    /* Sizes above `MAX_SUPPORTED_CAPACITY` should round down to
+    `MAX_SUPPORTED_CAPACITY` as that's the max */
+    assert_eq!(Buffer::cap_up_linear(usize::MAX), MAX_SUPPORTED_CAPACITY);
     assert_eq!(
-        Buffer::cap_up_linear(THEORETICAL_MAX_SIZE + 1234),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_up_linear(MAX_SUPPORTED_CAPACITY + 1234),
+        MAX_SUPPORTED_CAPACITY
     );
     assert_eq!(
-        Buffer::cap_up_linear(THEORETICAL_MAX_SIZE + 1),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_up_linear(MAX_SUPPORTED_CAPACITY + 1),
+        MAX_SUPPORTED_CAPACITY
     );
 
     // Other values should round up to nearest linear multiple of `CHUNK_SIZE`
@@ -502,12 +506,12 @@ fn test_buffer_cap_up_linear() {
         123 * CHUNK_SIZE
     );
     assert_eq!(
-        Buffer::cap_up_linear(THEORETICAL_MAX_SIZE - 1),
-        THEORETICAL_MAX_SIZE // Note: `THEORETICAL_MAX_SIZE` is a multiple of `CHUNK_SIZE`
+        Buffer::cap_up_linear(MAX_SUPPORTED_CAPACITY - 1),
+        MAX_SUPPORTED_CAPACITY // Note: `MAX_SUPPORTED_CAPACITY` is a multiple of `CHUNK_SIZE`
     );
     assert_eq!(
-        Buffer::cap_up_linear(THEORETICAL_MAX_SIZE - CHUNK_SIZE + 1),
-        THEORETICAL_MAX_SIZE
+        Buffer::cap_up_linear(MAX_SUPPORTED_CAPACITY - CHUNK_SIZE + 1),
+        MAX_SUPPORTED_CAPACITY
     );
 
     // Sizes below `CHUNK_SIZE` should round up to `CHUNK_SIZE` as that's the min
@@ -517,8 +521,12 @@ fn test_buffer_cap_up_linear() {
     // Exact sizes should stay the same
     assert_eq!(Buffer::cap_up_linear(3 * CHUNK_SIZE), 3 * CHUNK_SIZE);
     assert_eq!(
-        Buffer::cap_up_linear(THEORETICAL_MAX_SIZE - CHUNK_SIZE),
-        THEORETICAL_MAX_SIZE - CHUNK_SIZE
+        Buffer::cap_up_linear(MAX_SUPPORTED_CAPACITY - CHUNK_SIZE),
+        MAX_SUPPORTED_CAPACITY - CHUNK_SIZE
+    );
+    assert_eq!(
+        Buffer::cap_up_linear(MAX_SUPPORTED_CAPACITY),
+        MAX_SUPPORTED_CAPACITY
     );
 }
 
@@ -843,10 +851,10 @@ fn test_buffer_fill_amount() {
     buffer.discard();
 
     /* Test error when requesting more than the buffer can accommodate. The buffer cannot grow
-    beyond `THEORETICAL_MAX_SIZE`, so `amt > THEORETICAL_MAX_SIZE - self.len` is an unfulfillable
-    request */
+    beyond `MAX_SUPPORTED_CAPACITY`, so
+    `amt > MAX_SUPPORTED_CAPACITY - self.len` is an unfulfillable request. */
     let cur = Cursor::new(&data);
-    let result = buffer.fill_amount(cur, THEORETICAL_MAX_SIZE + 1);
+    let result = buffer.fill_amount(cur, MAX_SUPPORTED_CAPACITY + 1);
 
     // We should get an InvalidInput error
     assert!(result.is_err());
@@ -859,7 +867,7 @@ fn test_buffer_fill_amount() {
     let cur = Cursor::new(&data);
     let result = buffer.fill_amount(
         cur,
-        THEORETICAL_MAX_SIZE, // Now this exceeds remaining capacity
+        MAX_SUPPORTED_CAPACITY, // Now this exceeds remaining capacity
     );
 
     // We should get an InvalidInput error
@@ -921,10 +929,10 @@ fn test_buffer_fill_exact() {
     buffer.discard();
 
     /* Test error when requesting more than the buffer can accommodate. The buffer cannot grow
-    beyond `THEORETICAL_MAX_SIZE`, so `amt > THEORETICAL_MAX_SIZE - self.len` is an unfulfillable
-    request */
+    beyond `MAX_SUPPORTED_CAPACITY`, so
+    `amt > MAX_SUPPORTED_CAPACITY - self.len` is an unfulfillable request. */
     let cur = Cursor::new(&data);
-    let result = buffer.fill_exact(cur, THEORETICAL_MAX_SIZE + 1);
+    let result = buffer.fill_exact(cur, MAX_SUPPORTED_CAPACITY + 1);
 
     // We should get an InvalidInput error
     assert!(result.is_err());
@@ -937,7 +945,7 @@ fn test_buffer_fill_exact() {
     let cur = Cursor::new(&data);
     let result = buffer.fill_exact(
         cur,
-        THEORETICAL_MAX_SIZE, // Now this exceeds remaining capacity
+        MAX_SUPPORTED_CAPACITY, // Now this exceeds remaining capacity
     );
 
     // We should get an InvalidInput error

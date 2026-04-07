@@ -1,6 +1,6 @@
 use crate::DynamicRead;
 use crate::buffer::Buffer;
-use crate::constants::DEFAULT_MAX_SIZE;
+use crate::constants::DEFAULT_MAX_CAPACITY;
 use std::fmt;
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
 
@@ -31,7 +31,7 @@ impl<R: fmt::Debug + ?Sized> fmt::Debug for Reader<R> {
 impl<R: Read> Reader<R> {
     /// Creates a new `Reader` with default configuration.
     ///
-    /// The buffer starts at the default capacity and can grow up to [`DEFAULT_MAX_SIZE`].
+    /// The buffer starts at the default capacity and can grow up to [`DEFAULT_MAX_CAPACITY`].
     pub fn new(reader: R) -> Reader<R> {
         Reader::builder(reader).build()
     }
@@ -65,7 +65,7 @@ impl<R: Read> ReaderBuilder<R> {
         self
     }
 
-    /// Sets the maximum buffer capacity. Defaults to [`DEFAULT_MAX_SIZE`].
+    /// Sets the maximum buffer capacity. Defaults to [`DEFAULT_MAX_CAPACITY`].
     pub fn max_capacity(mut self, cap: usize) -> Self {
         self.max_capacity = Some(cap);
         self
@@ -79,7 +79,7 @@ impl<R: Read> ReaderBuilder<R> {
         };
         let max_capacity = self
             .max_capacity
-            .map_or(DEFAULT_MAX_SIZE, Buffer::cap_up)
+            .map_or(DEFAULT_MAX_CAPACITY, Buffer::cap_up)
             .max(buffer.cap());
 
         Reader {

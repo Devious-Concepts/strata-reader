@@ -72,7 +72,7 @@
 //! - [`buffer::Buffer`]: the standalone buffer for users who want direct control without wrapping a
 //!   reader.
 //! - [`constants`]: buffer size constants ([`CHUNK_SIZE`](constants::CHUNK_SIZE),
-//!   [`DEFAULT_MAX_SIZE`](constants::DEFAULT_MAX_SIZE)) used throughout the crate.
+//!   [`DEFAULT_MAX_CAPACITY`](constants::DEFAULT_MAX_CAPACITY)) used throughout the crate.
 
 pub mod buffer;
 pub mod constants;
