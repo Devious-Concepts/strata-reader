@@ -1,9 +1,4 @@
 //! Tests for the Reader
-//!
-//! These tests are in the same narrative order as the main file, and are designed to not depend on
-//! things that we've yet to have written tests for, at least narratively. While the test runner is
-//! asynchronous and this does not matter there, when reading the file, it makes the flow much
-//! easier to understand since we don't introduce future concepts if we can avoid them.
 
 #![expect(
     clippy::indexing_slicing,
@@ -116,7 +111,7 @@ fn test_reader_peek() {
     // Peek at zero bytes returns empty slice
     assert_eq!(reader.peek(0), &[]);
 
-    // Peek doesn't consume — repeated calls return the same data
+    // Peek doesn't consume, repeated calls return the same data
     assert_eq!(reader.peek(5), b"Hello");
 
     // After consuming, peek reflects the new position
@@ -149,7 +144,7 @@ fn test_reader_peek_behind() {
     // Zero returns empty
     assert_eq!(reader.peek_behind(0), &[]);
 
-    // Peek behind doesn't change state — repeated calls return the same data
+    // Peek behind doesn't change state, repeated calls return the same data
     assert_eq!(reader.peek_behind(7), b"Hello, ");
 }
 
@@ -186,8 +181,7 @@ fn test_reader_read() {
     let mut reader = Reader::new(cur);
     let mut buf = [0u8; 3];
 
-    // Inject exactly 6 bytes into the internal buffer such
-    // that the first two reads will consume from there
+    // Inject 6 bytes so the first two reads consume buffered data
     reader.buffer.inject_test_data(&data.as_bytes()[..6]); // The 6 bytes we skipped above
 
     // Read once
@@ -236,8 +230,7 @@ fn test_reader_read_vectored() {
     assert_eq!(&buf2[..8], &data.as_bytes()[5..]);
     assert_eq!(reader.buffer.pos(), data.len()); // Confirms fill_buf path
 
-    // Again, create a reader against some data, this time with a large buffer
-    // so we hit the code-path delegating to the given buffers reader instead
+    // Use a large buffer here so `read_vectored` delegates to the inner reader
     let data = "Hello, World!";
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);
@@ -250,7 +243,7 @@ fn test_reader_read_vectored() {
     assert_eq!(&buf[..13], data.as_bytes());
     assert_eq!(reader.buffer.pos(), 0); // Confirms delegation path
 
-    // With partially-consumed buffer — only unconsumed data should be returned
+    // With partially-consumed buffer, only unconsumed data should be returned
     let data = "Hello, World!";
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);
@@ -390,7 +383,7 @@ fn test_reader_read_exact() {
     assert_eq!(&buf, b"Hello, World!");
     assert_eq!(reader.buffer.len(), 0); // Confirms the buffer was cleared
 
-    // Interrupted retry — reader returns Interrupted once, then succeeds
+    // Interrupted retry, reader returns Interrupted once, then succeeds
     let inner = Cursor::new(b"Hello, World!");
     let reader = InterruptOnceReader {
         inner,
@@ -663,7 +656,7 @@ fn test_reader_into_inner() {
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);
 
-    // Fill the buffer — the cursor advances past all data
+    // Fill the buffer, the cursor advances past all data
     reader.fill_amount(data.len()).unwrap();
 
     // Recover the inner reader
@@ -767,7 +760,7 @@ fn test_reader_seek_current() {
     reader.fill_amount(data.len()).unwrap();
     reader.consume(5);
 
-    // Seek forward from current — adjusts for unconsumed bytes
+    // Seek forward from current, adjusts for unconsumed bytes
     let pos = reader.seek(SeekFrom::Current(2)).unwrap();
     assert_eq!(pos, 7); // Logical position was 5, +2 = 7
     assert_eq!(reader.buffer.len(), 0); // Buffer invalidated
@@ -813,7 +806,7 @@ fn test_reader_seek_current_backward() {
 
 #[test]
 fn test_reader_seek_relative() {
-    // Forward within unconsumed data — no I/O, just advances pos
+    // Forward within unconsumed data, no I/O, just advances pos
     let data = "Hello, World!";
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);
@@ -825,7 +818,7 @@ fn test_reader_seek_relative() {
     assert_eq!(reader.buffer.len(), data.len()); // Buffer NOT invalidated
     assert_eq!(reader.peek(8), b", World!");
 
-    // Backward within retained consumed data — no I/O
+    // Backward within retained consumed data, no I/O
     let data = "Hello, World!";
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);
@@ -838,7 +831,7 @@ fn test_reader_seek_relative() {
     assert_eq!(reader.buffer.len(), data.len()); // Buffer NOT invalidated
     assert_eq!(reader.peek(5), b"llo, ");
 
-    // Forward beyond buffered data — falls through to inner seek
+    // Forward beyond buffered data, falls through to inner seek
     let data = "Hello, World!";
     let mut cur = Cursor::new(data);
     cur.set_position(5); // Simulate having read 5 bytes already
@@ -852,7 +845,7 @@ fn test_reader_seek_relative() {
     reader.read_exact(&mut buf).unwrap();
     assert_eq!(&buf, b"d!"); // Logical was 3, +8 = 11
 
-    // Backward beyond retained consumed data — falls through to inner seek
+    // Backward beyond retained consumed data, falls through to inner seek
     let data = "Hello, World!";
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);
@@ -871,7 +864,7 @@ fn test_reader_seek_relative() {
     reader.read_exact(&mut buf).unwrap();
     assert_eq!(&buf, b"rld!");
 
-    // Zero offset — in-buffer fast path, no-op
+    // Zero offset, in-buffer fast path, no-op
     let data = "Hello, World!";
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);

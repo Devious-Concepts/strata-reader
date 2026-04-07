@@ -1,58 +1,37 @@
 //! Buffer size constants for dynamic memory allocation.
 //!
-//! This module defines the core constants used throughout the buffering system to ensure consistent
-//! memory allocation behavior. All buffer sizes are managed as multiples of [`CHUNK_SIZE`].
-//!
-//! # Size Hierarchy
-//!
-//! The constants establish a three-tier hierarchy:
-//! - [`CHUNK_SIZE`]: The fundamental allocation unit (8 KiB)
-//! - [`DEFAULT_MAX_SIZE`]: A reasonable default upper bound (256 MiB)
-//! - [`PRACTICAL_MAX_SIZE`]: The theoretical platform maximum
+//! All buffer sizes are managed as multiples of [`CHUNK_SIZE`].
 //!
 //! # Invariant
 //!
 //! The following mathematical relationships must hold between the constants:
 //!
-//! - `CHUNK_SIZE` is a power of 2, a multiple of 1 KiB, and at least 8 KiB
-//! - `DEFAULT_MAX_SIZE > CHUNK_SIZE` and is a power of 2 multiple of `CHUNK_SIZE`
-//! - `PRACTICAL_MAX_SIZE > DEFAULT_MAX_SIZE` and is a power of 2 multiple of `CHUNK_SIZE`
-//!
-//! These invariants ensure that all buffer allocations align properly and that the size hierarchy
-//! remains consistent across the system.
+//! - [`CHUNK_SIZE`] is a power of 2 and at least 8 KiB
+//! - [`DEFAULT_MAX_SIZE`] and [`THEORETICAL_MAX_SIZE`] are both power-of-two multiples of
+//!   `CHUNK_SIZE`
+//! - `CHUNK_SIZE < DEFAULT_MAX_SIZE < THEORETICAL_MAX_SIZE`
 
-/// Buffer chunk size (8 KiB) used for dynamic buffer allocation.
+/// Buffer chunk size. (8 KiB)
 ///
 /// The size matches [`std::io::BufReader`]'s internal buffer size, deferring to the standard
 /// library authors' knowledge of optimal I/O performance.
 ///
-/// The buffer capacity will always be a multiple of this value and it's therefore also the minimum
-/// possible size (1 * `CHUNK_SIZE`). Additionally `CHUNK_SIZE / 2` (half a chunk) will always align
-/// with a common minimum page size (4 KiB).
-pub const CHUNK_SIZE: usize =
-    // 2^13 = 8192 = 8 * 1024 = 8 KiB
-    1 << 13;
+/// Buffer capacity is always a multiple of this value, making it also the minimum possible size.
+pub const CHUNK_SIZE: usize = 1 << 13; // 2^13 = 8 KiB
 
 /// Default maximum buffer size (256 MiB) when no limit is specified.
 ///
-/// This provides a reasonable upper bound for most use cases while preventing runaway memory usage.
-/// It is also always a power of two multiple (larger than 1) of [`CHUNK_SIZE`].
-pub const DEFAULT_MAX_SIZE: usize =
-    // CHUNK_SIZE = 2^13 = 8192 = 8 * 1024 = 8 KiB
-    // 2^15 = 32768 = 32 * 1024 = 32 KiB
-    // CHUNK_SIZE * 2^15 = 268435456 = 256 * 1024 * 1024 = 256 MiB
-    CHUNK_SIZE * (1 << 15);
+/// Provides a reasonable upper bound for most use cases while preventing runaway memory usage.
+pub const DEFAULT_MAX_SIZE: usize = CHUNK_SIZE * (1 << 15); // CHUNK_SIZE * 2^15 = 256 MiB
 
-/// Practical maximum buffer size.
+/// Theoretical maximum buffer size.
 ///
-/// This is a hardware/platform limit, not a recommended size. It's used to have an upper bound
-/// against unreasonable user input. Its value is the largest power of two multiple of
-/// [`CHUNK_SIZE`] that fits in usize, representing the theoretical maximum reachable through
-/// exponential growth.
+/// This is a hardware/platform limit. Used to have an upper bound against unreasonable user input.
+/// Its value is the largest power-of-two multiple of [`CHUNK_SIZE`] that fits in usize,
+/// representing the theoretical maximum reachable through exponential growth.
 ///
-/// While this is a massive number, it won't overflow as it resolves to `usize::MAX / 2 + 1` just
-/// expressed in terms of `CHUNK_SIZE`.
-pub const PRACTICAL_MAX_SIZE: usize = CHUNK_SIZE * (1 << CHUNK_SIZE.leading_zeros());
+/// Equals `usize::MAX / 2 + 1` just expressed in terms of `CHUNK_SIZE`.
+pub const THEORETICAL_MAX_SIZE: usize = CHUNK_SIZE * (1 << CHUNK_SIZE.leading_zeros());
 
 #[cfg(test)]
 mod tests;

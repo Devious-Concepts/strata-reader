@@ -55,6 +55,7 @@
 
   // Words to ignore in spell-checking.
   "cSpell.ignoreWords": [
+    "MSRV",
     "MSVC",
     "Swatinem",
     "bufread",

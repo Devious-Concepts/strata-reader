@@ -227,12 +227,11 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             // Clear all data in the internal buffer
             self.buffer.clear();
 
-            // Let the inner reader take things from here
-            // Reading into the target buffer directly
+            // Let the inner reader take things from here. Reading into the target buffer directly
             return self.reader.read(buffer);
         }
 
-        // Get a slice of data to put in the buffer.
+        // Get a slice of data to put in the buffer
         let mut data = self.fill_buf()?;
 
         // Read from the slice into the buffers
@@ -250,8 +249,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 
         if self.buffer.pos() >= self.buffer.len() && total_length >= self.buffer.cap() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
-            // If we've consumed the entire buffer and the total length of the target buffers is
-            // larger than the current buffer size, then defer to the inner reader
+            // If the buffer is exhausted and the targets are larger, defer to the inner reader
 
             // Discard all data in the internal buffer
             self.buffer.clear();
@@ -260,7 +258,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             return self.reader.read_vectored(buffers);
         }
 
-        // Get a slice of data to put in the buffers.
+        // Get a slice of data to put in the buffers
         let mut data = self.fill_buf()?;
 
         // Read from the slice into the buffers
@@ -272,8 +270,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         Ok(bytes_read)
     }
 
-    // Like BufReader, we can also delegate to the internal reader after clearing our buffer as the
-    // internal buffer might have a more efficient method to `read_to_end`
+    // Like BufReader, clear our buffer and delegate if the inner reader optimizes `read_to_end`
     #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
     #[expect(clippy::arithmetic_side_effects, reason = "Would OOM before overflow")]
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -489,8 +486,8 @@ impl<R: Read + Seek + ?Sized> Seek for Reader<R> {
 impl<R: Read + Seek + ?Sized> Reader<R> {
     /// Seeks relative to the current position, with an in-buffer fast path.
     ///
-    /// If the target position falls within the currently buffered data — either
-    /// forward into unconsumed bytes or backward into retained consumed bytes —
+    /// If the target position falls within the currently buffered data, either
+    /// forward into unconsumed bytes or backward into retained consumed bytes,
     /// the seek is performed without any I/O. Otherwise, the seek is delegated
     /// to the underlying reader and the buffer is invalidated.
     #[expect(
