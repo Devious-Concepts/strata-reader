@@ -681,8 +681,8 @@ impl Buffer {
         let mut total_bytes_read = 0;
 
         loop {
-            // This is a non-growing method so `Capped` is the target for the `Complete` case
-            match self.read_once(&mut reader, &mut total_bytes_read, Some(&mut |_| true))? {
+            // This is a non-growing method so hitting the current cap means `Complete`
+            match self.read_once(&mut reader, &mut total_bytes_read, Some(self.cap))? {
                 ReadOnce::Capped => return Ok(FillResult::Complete(total_bytes_read)),
                 ReadOnce::Eof => return Ok(FillResult::Eof(total_bytes_read)),
                 ReadOnce::Read => {}
@@ -745,7 +745,7 @@ impl Buffer {
         let mut total_bytes_read = 0;
 
         while total_bytes_read < amt {
-            match self.read_once(&mut reader, &mut total_bytes_read, Some(&mut |_| true))? {
+            match self.read_once(&mut reader, &mut total_bytes_read, Some(self.cap))? {
                 ReadOnce::Read => {}
                 ReadOnce::Eof => {
                     self.shrink_targeted(starting_capacity);
@@ -818,9 +818,10 @@ impl Buffer {
 
     /// Grows (unless capped), reads once from `reader`, and updates bookkeeping.
     ///
-    /// When the buffer is full, `is_capped` is consulted first: if `Some(f)` and `f(self.cap)`
-    /// returns `true`, the read is skipped and [`ReadOnce::Capped`] is returned. Otherwise the
-    /// buffer grows before reading.
+    /// When the buffer is full, `growth_limit` is consulted first. If `Some(limit)` and
+    /// `self.cap >= limit`, the read is skipped and [`ReadOnce::Capped`] is returned. Otherwise
+    /// the buffer grows before reading, using exponential growth when the next step fits within
+    /// the limit and linear growth toward the limit when it would overshoot.
     ///
     /// On success the read bytes are appended (`self.len` is advanced) and `*total_bytes_read` is
     /// incremented.
@@ -833,18 +834,30 @@ impl Buffer {
         &mut self,
         reader: &mut impl Read,
         total_bytes_read: &mut usize,
-        is_capped: Option<&mut dyn FnMut(usize) -> bool>,
+        growth_limit: Option<usize>,
     ) -> io::Result<ReadOnce> {
         if self.len >= self.cap {
             debug_assert!(self.len == self.cap);
 
-            if let Some(f) = is_capped {
-                if f(self.cap) {
+            if let Some(limit) = growth_limit.map(Self::cap_up_linear) {
+                if self.cap >= limit {
                     return Ok(ReadOnce::Capped);
                 }
-            }
 
-            self.grow();
+                let next_exponential = Self::cap_up(self.cap + CHUNK_SIZE);
+                if next_exponential > limit {
+                    // Fail closed if a future caller stops normalizing `growth_limit`.
+                    if Self::cap_up_linear(limit) > limit {
+                        return Ok(ReadOnce::Capped);
+                    }
+
+                    self.grow_targeted_linear(limit);
+                } else {
+                    self.grow();
+                }
+            } else {
+                self.grow();
+            }
         }
 
         // Fill all available space, retrying on interrupt
@@ -920,8 +933,9 @@ impl Buffer {
     /// (`&buf[pos..len]`). Reading continues while the predicate returns `true`.
     ///
     /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` to leave growth
-    /// uncapped by the caller. Returns [`UnboundedFillResult::Capped`] if the limit is reached
-    /// before the predicate returns `false`.
+    /// uncapped by the caller. Non-aligned limits are rounded up to the next [`CHUNK_SIZE`]
+    /// multiple. Returns [`UnboundedFillResult::Capped`] if the limit is reached before the
+    /// predicate returns `false`.
     ///
     /// # Examples
     ///
@@ -960,8 +974,6 @@ impl Buffer {
         mut predicate: impl FnMut(&[u8]) -> bool,
         growth_limit: Option<usize>,
     ) -> io::Result<UnboundedFillResult> {
-        let max_cap = growth_limit.unwrap_or(THEORETICAL_MAX_SIZE);
-
         // Capture starting capacity to use as shrink limit
         let starting_capacity = self.cap;
         // Track the total bytes read
@@ -973,11 +985,7 @@ impl Buffer {
                 break;
             }
 
-            match self.read_once(
-                &mut reader,
-                &mut total_bytes_read,
-                Some(&mut |cap| cap >= max_cap),
-            )? {
+            match self.read_once(&mut reader, &mut total_bytes_read, growth_limit)? {
                 ReadOnce::Capped => return Ok(UnboundedFillResult::Capped(total_bytes_read)),
                 ReadOnce::Eof => {
                     self.shrink_targeted(starting_capacity);
@@ -999,8 +1007,9 @@ impl Buffer {
     /// check left off.
     ///
     /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` to leave growth
-    /// uncapped by the caller. Returns [`UnboundedFillResult::Capped`] if the limit is reached
-    /// before the delimiter is found.
+    /// uncapped by the caller. Non-aligned limits are rounded up to the next [`CHUNK_SIZE`]
+    /// multiple. Returns [`UnboundedFillResult::Capped`] if the limit is reached before the
+    /// delimiter is found.
     ///
     /// # Examples
     ///
@@ -1026,8 +1035,6 @@ impl Buffer {
         byte: u8,
         growth_limit: Option<usize>,
     ) -> io::Result<UnboundedFillResult> {
-        let max_cap = growth_limit.unwrap_or(THEORETICAL_MAX_SIZE);
-
         // Capture starting capacity to use as shrink limit
         let starting_capacity = self.cap;
         // Track the total bytes read
@@ -1044,11 +1051,7 @@ impl Buffer {
             // Advance past what we've already checked
             check_pos = self.len;
 
-            match self.read_once(
-                &mut reader,
-                &mut total_bytes_read,
-                Some(&mut |cap| cap >= max_cap),
-            )? {
+            match self.read_once(&mut reader, &mut total_bytes_read, growth_limit)? {
                 ReadOnce::Capped => return Ok(UnboundedFillResult::Capped(total_bytes_read)),
                 ReadOnce::Eof => {
                     self.shrink_targeted(starting_capacity);
@@ -1230,7 +1233,8 @@ impl Buffer {
     /// when their UTF-8 bytes span read boundaries.
     ///
     /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` to leave growth
-    /// uncapped by the caller.
+    /// uncapped by the caller. Non-aligned limits are rounded up to the next [`CHUNK_SIZE`]
+    /// multiple.
     /// Returns [`UnboundedFillResult::Capped`] if the limit is reached before `ch` is found.
     ///
     /// # Examples
@@ -1265,9 +1269,9 @@ impl Buffer {
     /// iterations so matches spanning read boundaries are not missed.
     ///
     /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` to leave growth
-    /// uncapped by the caller. Returns [`UnboundedFillResult::Capped`] if the limit is reached
-    /// before `needle` is found, or [`UnboundedFillResult::Complete`] immediately if `needle` is
-    /// empty.
+    /// uncapped by the caller. Non-aligned limits are rounded up to the next [`CHUNK_SIZE`]
+    /// multiple. Returns [`UnboundedFillResult::Capped`] if the limit is reached before `needle`
+    /// is found, or [`UnboundedFillResult::Complete`] immediately if `needle` is empty.
     ///
     /// # Examples
     ///
@@ -1297,8 +1301,6 @@ impl Buffer {
             return Ok(UnboundedFillResult::Complete(0));
         }
 
-        let max_cap = growth_limit.unwrap_or(THEORETICAL_MAX_SIZE);
-
         // Capture starting capacity to use as shrink limit
         let starting_capacity = self.cap;
         let mut total_bytes_read = 0;
@@ -1320,11 +1322,7 @@ impl Buffer {
             let end = check_pos + unchecked.len();
             check_pos = self.align_pos_to_char((end + 1).saturating_sub(needle.len()));
 
-            match self.read_once(
-                &mut reader,
-                &mut total_bytes_read,
-                Some(&mut |cap| cap >= max_cap),
-            )? {
+            match self.read_once(&mut reader, &mut total_bytes_read, growth_limit)? {
                 ReadOnce::Capped => return Ok(UnboundedFillResult::Capped(total_bytes_read)),
                 ReadOnce::Eof => {
                     self.shrink_targeted(starting_capacity);

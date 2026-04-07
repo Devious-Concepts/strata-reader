@@ -8,10 +8,10 @@ use std::io::{self, BufRead};
 ///
 /// # Buffer Inspection
 ///
-/// Use [`buffer()`](Self::buffer) to access all buffered data (including consumed bytes),
-/// [`pos()`](Self::pos) to find where unconsumed data begins, and [`capacity()`](Self::capacity) to
-/// observe the total buffer size. These are useful for deciding when to reclaim memory with
-/// [`shrink()`](Self::shrink) or [`compact()`](Self::compact).
+/// Use [`buffer()`](Self::buffer) to access the data currently retained in the buffer,
+/// [`pos()`](Self::pos) to find where unconsumed data begins when consumed data is retained, and
+/// [`capacity()`](Self::capacity) to observe the total buffer size. These are useful for deciding
+/// when to reclaim memory with [`shrink()`](Self::shrink) or [`compact()`](Self::compact).
 ///
 /// # Buffer Operations
 ///
@@ -21,9 +21,10 @@ use std::io::{self, BufRead};
 /// - [`clear()`](Self::clear): Abandons all buffered data without changing capacity
 /// - [`discard()`](Self::discard): Resets the buffer to an empty, minimal-capacity state
 pub trait DynamicRead: BufRead {
-    /// Returns all buffered data, including consumed bytes not yet compacted.
+    /// Returns the data currently retained in the buffer.
     ///
-    /// The unconsumed portion starts at [`pos()`](Self::pos).
+    /// Implementations may retain consumed bytes for inspection or seeking. When they do, the
+    /// unconsumed portion starts at [`pos()`](Self::pos).
     fn buffer(&self) -> &[u8];
 
     /// Returns the current read position within the buffer.
@@ -67,8 +68,11 @@ pub trait DynamicRead: BufRead {
 
     /// Reads from the underlying reader while `predicate` returns `true`.
     ///
-    /// The predicate is called before each read with the full buffer contents, not just newly read
-    /// data.
+    /// The predicate is called before each read with the current unconsumed data, not just newly
+    /// read data.
+    ///
+    /// For implementations that retain consumed bytes in [`buffer()`](Self::buffer), this is the
+    /// portion starting at [`pos()`](Self::pos).
     ///
     /// Returns the total number of new bytes read. A return of `0` when the predicate still returns
     /// `true` means it could not read more. See the implementor's documentation for specific

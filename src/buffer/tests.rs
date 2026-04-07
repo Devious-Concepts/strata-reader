@@ -1068,6 +1068,10 @@ fn test_buffer_fill_to_end() {
 // -----------------------------------------------------------------------------
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Exercises the full fill_while behavior matrix in one place"
+)]
 fn test_buffer_fill_while() {
     let mut buffer = Buffer::new();
     let raw = "Hello, World!";
@@ -1231,6 +1235,19 @@ fn test_buffer_fill_while() {
     assert_eq!(buffer.len(), 2 * CHUNK_SIZE);
     assert!(buffer.buf().contains(&b'\0'));
     assert!(buffer.buf()[..CHUNK_SIZE].iter().all(|&b| b == b'a'));
+
+    // Test non-aligned growth_limit, it should round up and then degrade to linear at the ceiling
+    let mut buffer = Buffer::with_capacity(4 * CHUNK_SIZE);
+    let big_data = vec![b'a'; CHUNK_SIZE * 6];
+    let cur = Cursor::new(&big_data[..]);
+    let read = buffer
+        .fill_while(cur, |_| true, Some(5 * CHUNK_SIZE - 1))
+        .unwrap();
+
+    // We should have filled exactly to the rounded ceiling without overshooting to 8 * CHUNK_SIZE
+    assert_eq!(read, UnboundedFillResult::Capped(5 * CHUNK_SIZE));
+    assert_eq!(buffer.len(), 5 * CHUNK_SIZE);
+    assert_eq!(buffer.cap(), 5 * CHUNK_SIZE);
 }
 
 /* Coverage note: `fill_while` relies on `read_once` and `shrink_targeted`.
@@ -1342,6 +1359,19 @@ fn test_buffer_fill_until() {
     // Should complete immediately with 0 bytes read
     assert_eq!(read, UnboundedFillResult::Complete(0));
     assert_eq!(buffer.buf(), b"already\nhere");
+
+    // Test non-aligned growth_limit, it should round up and then degrade to linear at the ceiling
+    let mut buffer = Buffer::with_capacity(4 * CHUNK_SIZE);
+    let big_data = vec![b'a'; CHUNK_SIZE * 6];
+    let cur = Cursor::new(&big_data[..]);
+    let read = buffer
+        .fill_until(cur, b'\n', Some(5 * CHUNK_SIZE - 1))
+        .unwrap();
+
+    // We should have filled exactly to the rounded ceiling without overshooting to 8 * CHUNK_SIZE
+    assert_eq!(read, UnboundedFillResult::Capped(5 * CHUNK_SIZE));
+    assert_eq!(buffer.len(), 5 * CHUNK_SIZE);
+    assert_eq!(buffer.cap(), 5 * CHUNK_SIZE);
 }
 
 /* Coverage note: `fill_until` relies on `read_once` and `shrink_targeted`.
@@ -1606,6 +1636,19 @@ fn test_buffer_fill_until_char() {
     // Should complete immediately with 0 bytes read
     assert_eq!(read, UnboundedFillResult::Complete(0));
     assert_eq!(buffer.buf(), "Hello, 世界!".as_bytes());
+
+    // Test non-aligned growth_limit, it should round up and then degrade to linear at the ceiling
+    let mut buffer = Buffer::with_capacity(4 * CHUNK_SIZE);
+    let big_data = "a".repeat(CHUNK_SIZE * 6);
+    let cur = Cursor::new(big_data.as_bytes());
+    let read = buffer
+        .fill_until_char(cur, '界', Some(5 * CHUNK_SIZE - 1))
+        .unwrap();
+
+    // We should have filled exactly to the rounded ceiling without overshooting to 8 * CHUNK_SIZE
+    assert_eq!(read, UnboundedFillResult::Capped(5 * CHUNK_SIZE));
+    assert_eq!(buffer.len(), 5 * CHUNK_SIZE);
+    assert_eq!(buffer.cap(), 5 * CHUNK_SIZE);
 }
 
 /* Coverage note: `fill_until_char` delegates to `fill_until_str`.
@@ -1733,6 +1776,19 @@ fn test_buffer_fill_until_str() {
     // Should complete immediately with 0 bytes read
     assert_eq!(read, UnboundedFillResult::Complete(0));
     assert_eq!(buffer.buf(), b"Hello, World!END more data");
+
+    // Test non-aligned growth_limit, it should round up and then degrade to linear at the ceiling
+    let mut buffer = Buffer::with_capacity(4 * CHUNK_SIZE);
+    let big_data = vec![b'a'; CHUNK_SIZE * 6];
+    let cur = Cursor::new(&big_data[..]);
+    let read = buffer
+        .fill_until_str(cur, "END", Some(5 * CHUNK_SIZE - 1))
+        .unwrap();
+
+    // We should have filled exactly to the rounded ceiling without overshooting to 8 * CHUNK_SIZE
+    assert_eq!(read, UnboundedFillResult::Capped(5 * CHUNK_SIZE));
+    assert_eq!(buffer.len(), 5 * CHUNK_SIZE);
+    assert_eq!(buffer.cap(), 5 * CHUNK_SIZE);
 }
 
 /* Coverage note: `fill_until_str` relies on `read_once` and `shrink_targeted`.

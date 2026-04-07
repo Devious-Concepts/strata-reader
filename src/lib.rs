@@ -45,7 +45,7 @@
 //! // The remaining unconsumed data is still available going forward
 //! assert_eq!(reader.peek(5), b"value");
 //!
-//! // Reclaim the memory used by consumed bytes when you're ready
+//! // Move the remaining data to the front to make room for future reads
 //! reader.compact();
 //! ```
 //!

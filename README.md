@@ -12,8 +12,10 @@ are unpredictable and you want to manage buffer lifetime yourself.
 
 ## Features
 
-- **Automatic buffer growth**: the buffer grows in power-of-two multiples of 8 KiB as needed, up to
-  a configurable maximum.
+- **Automatic buffer growth**: the buffer grows in `CHUNK_SIZE` (8 KiB) units using exponential
+  growth by default, then switches to linear growth when nearing the configured maximum. See the
+  growth logic in `src/buffer.rs` around `Buffer::grow`, `Buffer::grow_targeted_linear`, and
+  `read_once`.
 - **Manual memory management**: `compact()` reclaims consumed space, `shrink()` releases unused
   capacity, `clear()` and `discard()` reset the buffer. Nothing happens behind your back.
 - **Builder pattern**: configure initial and maximum capacity via `Reader::builder(reader)`.
@@ -57,7 +59,7 @@ assert_eq!(reader.peek_behind(4), b"key=");
 // The remaining unconsumed data is still available going forward
 assert_eq!(reader.peek(5), b"value");
 
-// Reclaim the memory used by consumed bytes when you're ready
+// Move the remaining data to the front to make room for future reads
 reader.compact();
 ```
 
