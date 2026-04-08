@@ -118,10 +118,6 @@ fn test_buffer_new() {
     assert_eq!(buffer.pos, 0);
 }
 
-/* Coverage note: `Default` is a thin wrapper over `new`.
- * Its behavior is covered by the `new` tests.
- */
-
 #[test]
 fn test_buffer_with_capacity() {
     let buffer = Buffer::with_capacity(123 * CHUNK_SIZE); // Accepts linear multiple
@@ -1845,3 +1841,59 @@ fn test_buffer_fill_until_str() {
 /* Coverage note: `fill_until_str` relies on `read_once` and `shrink_targeted`.
  * Those behaviors are tested separately; this section covers method-specific behavior.
  */
+
+// -----------------------------------------------------------------------------
+// Buffer - Default, Clone, and PartialEq
+// -----------------------------------------------------------------------------
+
+/* Coverage note: `Default` is a thin wrapper over `new`.
+ * Its behavior is covered by the `new` tests.
+ */
+
+#[test]
+fn test_buffer_clone() {
+    let mut buffer = Buffer::with_capacity(4 * CHUNK_SIZE);
+    buffer.inject_test_data(b"abcdef");
+    buffer.pos = 2;
+
+    // Write distinct bytes into spare capacity beyond the logical `len`.
+    buffer.buf[buffer.len] = b'x';
+    buffer.buf[buffer.cap - 1] = b'y';
+
+    // Clone preserves the logical contents and read position.
+    let cloned = buffer.clone();
+    assert_eq!(cloned, buffer);
+    assert_eq!(cloned.buf(), b"abcdef");
+    assert_eq!(cloned.pos(), 2);
+
+    // Clone rebuilds storage from initialized bytes only.
+    assert_eq!(cloned.cap(), CHUNK_SIZE);
+    assert!(cloned.buf[cloned.len..].iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn test_buffer_partial_eq() {
+    let mut left = Buffer::with_capacity(4 * CHUNK_SIZE);
+    let mut right = Buffer::new();
+
+    left.inject_test_data(b"abcdef");
+    right.inject_test_data(b"abcdef");
+
+    // Keep the logical read position the same on both buffers.
+    left.pos = 2;
+    right.pos = 2;
+
+    // Write different bytes into spare capacity beyond each buffer's logical `len`.
+    left.buf[left.len] = b'x';
+    left.buf[left.cap - 1] = b'y';
+    right.buf[right.len] = b'z';
+    right.buf[right.cap - 1] = b'w';
+
+    // Equality ignores capacity and spare bytes.
+    assert_eq!(left, right);
+
+    // Equality still distinguishes different logical read positions.
+    right.pos = 3;
+
+    assert_ne!(left, right);
+}

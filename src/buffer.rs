@@ -140,7 +140,7 @@ enum ReadOnce {
 ///
 /// This buffer maintains the invariant `0 <= self.pos <= self.len <= self.cap == self.buf.len() <=
 /// self.buf.capacity()` at all times, ensuring memory safety and correctness of all operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Eq)]
 pub struct Buffer {
     /// Internal buffer storage.
     buf: Vec<u8>,
@@ -598,11 +598,12 @@ impl Buffer {
         self.shrink_targeted(CHUNK_SIZE);
     }
 
-    /// Shrinks the buffer capacity to fit the current data or a target capacity, whichever is larger.
+    /// Shrinks the buffer capacity to fit the current data or a target capacity, whichever is
+    /// larger.
     ///
     /// Reduces the buffer's capacity to the smallest [`CHUNK_SIZE`] multiple that can hold either
-    /// the current data or the specified target capacity, whichever requires more space. The minimum
-    /// capacity is [`CHUNK_SIZE`].
+    /// the current data or the specified target capacity, whichever requires more space. The
+    /// minimum capacity is [`CHUNK_SIZE`].
     ///
     /// # Examples
     ///
@@ -817,8 +818,8 @@ impl Buffer {
 
     /// Fills the buffer with exactly `amt` bytes from a reader, growing as needed.
     ///
-    /// Pre-allocates capacity to fit the requested amount, then reads exactly that many bytes
-    /// using [`Read::read_exact`].
+    /// Pre-allocates capacity to fit the requested amount, then reads exactly that many bytes using
+    /// [`Read::read_exact`].
     ///
     /// Unlike [`fill_amount`](Self::fill_amount), this method requires the full amount to be
     /// available and returns an error if EOF is reached early.
@@ -838,8 +839,8 @@ impl Buffer {
     ///
     /// # Errors
     ///
-    /// Returns [`io::ErrorKind::UnexpectedEof`] if the reader cannot provide the full amount.
-    /// On error, the buffer contents are unspecified (some bytes may have been read).
+    /// Returns [`io::ErrorKind::UnexpectedEof`] if the reader cannot provide the full amount. On
+    /// error, the buffer contents are unspecified (some bytes may have been read).
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
@@ -880,8 +881,7 @@ impl Buffer {
     /// starting capacity while still fitting the buffered data.
     ///
     /// This method does not impose a caller-visible growth limit of its own; it keeps reading and
-    /// growing until EOF or an error occurs. In practice, available memory is the meaningful
-    /// bound.
+    /// growing until EOF or an error occurs. In practice, available memory is the meaningful bound.
     ///
     /// # Examples
     ///
@@ -898,8 +898,8 @@ impl Buffer {
     ///
     /// # Errors
     ///
-    /// Returns any I/O errors encountered while reading. On error, bytes read before
-    /// the failure remain in the buffer but the returned count is not available.
+    /// Returns any I/O errors encountered while reading. On error, bytes read before the failure
+    /// remain in the buffer but the returned count is not available.
     pub fn fill_to_end(&mut self, mut reader: impl Read) -> io::Result<usize> {
         // Capture starting capacity to use as shrink limit
         let starting_capacity = self.cap;
@@ -960,8 +960,8 @@ impl Buffer {
     ///
     /// # Errors
     ///
-    /// Returns any I/O errors encountered while reading. On error, bytes read before
-    /// the failure remain in the buffer but the returned count is not available.
+    /// Returns any I/O errors encountered while reading. On error, bytes read before the failure
+    /// remain in the buffer but the returned count is not available.
     #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
     pub fn fill_while(
         &mut self,
@@ -1085,8 +1085,8 @@ impl Buffer {
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// buffer.fill(Cursor::new("Hello, 世界!")).unwrap(); // 世界 is World in Japanese
-    /// // "Hello, " = 7 bytes, '世' starts at byte 7 and is 3 bytes long, '界' starts at byte 10
-    /// // Position 8 is in the middle of the '世' character
+    /// /* "Hello, " = 7 bytes, '世' starts at byte 7 and is 3 bytes long, '界' starts at byte 10
+    /// Position 8 is in the middle of the '世' character */
     /// let aligned = buffer.align_pos_to_char(8);
     /// assert_eq!(aligned, 7); // Aligned to start of '世'
     /// ```
@@ -1101,9 +1101,9 @@ impl Buffer {
         let clamped = cmp::max(offset, self.pos).min(self.len);
 
         if clamped == self.len {
-            // Can't use an inclusive range here: buf[len] is outside the logical content, and
-            // panics when len == cap. Instead, scan the valid bytes to check whether self.len
-            // falls on a complete character boundary.
+            /* Can't use an inclusive range here: buf[len] is outside the logical content, and
+            panics when len == cap. Instead, scan the valid bytes to check whether self.len falls
+            on a complete character boundary. */
             if self.pos == self.len {
                 return self.len;
             }
@@ -1140,7 +1140,8 @@ impl Buffer {
             self.buf[self.pos..=clamped]
                 .iter()
                 .rev()
-                // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
+                /* If the top two bits are 10 then it's a continuation byte,
+                this bitmask checks that */
                 .position(|&b| b & 0b1100_0000 != 0b1000_0000)
                 .map_or(self.pos, |i| clamped - i)
         }
@@ -1165,8 +1166,8 @@ impl Buffer {
     /// # use std::io::Cursor;
     /// let mut buffer = Buffer::new();
     /// buffer.fill(Cursor::new("Hello, 世界!")).unwrap(); // 世界 is World in Japanese
-    /// // "Hello, " = 7 bytes, '世' starts at byte 7 and is 3 bytes long, '界' starts at byte 10
-    /// // Position 8 is in the middle of the '世' character
+    /// /* "Hello, " = 7 bytes, '世' starts at byte 7 and is 3 bytes long, '界' starts at byte 10
+    /// Position 8 is in the middle of the '世' character */
     /// let aligned = buffer.align_pos_to_next_char(8);
     /// assert_eq!(aligned, 10); // Aligned to start of '界'
     /// ```
@@ -1191,8 +1192,8 @@ impl Buffer {
     /// Returns the unconsumed buffer data as a UTF-8 string slice.
     ///
     /// Automatically handles partial UTF-8 sequences by:
-    /// - Skipping incomplete sequences at the start (e.g., if `pos()` is not on a character
-    ///   boundary)
+    /// - Skipping incomplete sequences at the start
+    ///   (e.g., if `pos()` is not on a character boundary)
     /// - Trimming incomplete sequences at the end
     ///
     /// This is a convenience method for working with text data without manual UTF-8 handling.
@@ -1210,8 +1211,8 @@ impl Buffer {
     ///
     /// # Errors
     ///
-    /// Returns an [`io::Error`] with kind [`InvalidData`](io::ErrorKind::InvalidData) if the
-    /// buffer contains invalid UTF-8 sequences (not at boundaries).
+    /// Returns an [`io::Error`] with kind [`InvalidData`](io::ErrorKind::InvalidData) if the buffer
+    /// contains invalid UTF-8 sequences (not at boundaries).
     pub fn as_str(&self) -> io::Result<&str> {
         self.as_str_from(self.pos)
     }
@@ -1235,8 +1236,8 @@ impl Buffer {
     ///
     /// # Errors
     ///
-    /// Returns an [`io::Error`] with kind [`InvalidData`](io::ErrorKind::InvalidData) if the
-    /// buffer contains invalid UTF-8 sequences (not at boundaries).
+    /// Returns an [`io::Error`] with kind [`InvalidData`](io::ErrorKind::InvalidData) if the buffer
+    /// contains invalid UTF-8 sequences (not at boundaries).
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
@@ -1271,8 +1272,8 @@ impl Buffer {
     ///
     /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` to leave growth
     /// uncapped by the caller. Non-aligned limits are rounded up to the next [`CHUNK_SIZE`]
-    /// multiple.
-    /// Returns [`UnboundedFillResult::Capped`] if the limit is reached before `ch` is found.
+    /// multiple. Returns [`UnboundedFillResult::Capped`] if the limit is reached before `ch` is
+    /// found.
     ///
     /// # Examples
     ///
@@ -1378,6 +1379,30 @@ impl Buffer {
 impl Default for Buffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Clone for Buffer {
+    #[inline]
+    fn clone(&self) -> Self {
+        let cap = Self::cap_up_linear(self.len);
+        let mut buf = Vec::with_capacity(cap);
+        buf.extend_from_slice(self.buf());
+        buf.resize(cap, 0);
+
+        Self {
+            buf,
+            cap,
+            len: self.len,
+            pos: self.pos,
+        }
+    }
+}
+
+impl PartialEq for Buffer {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos && self.buf() == other.buf()
     }
 }
 
