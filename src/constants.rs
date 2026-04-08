@@ -1,16 +1,6 @@
 //! Buffer size constants for dynamic memory allocation.
 //!
 //! All buffer sizes are managed as multiples of [`CHUNK_SIZE`].
-//!
-//! # Invariant
-//!
-//! The following mathematical relationships must hold between the constants:
-//!
-//! - [`CHUNK_SIZE`] is a power of 2 and at least 8 KiB
-//! - [`DEFAULT_MAX_CAPACITY`] is a power-of-two multiple of `CHUNK_SIZE`
-//! - [`MAX_SUPPORTED_CAPACITY`] is a multiple of `CHUNK_SIZE`
-//! - [`MAX_SUPPORTED_CAPACITY`] is the largest aligned capacity supported by the implementation
-//! - `CHUNK_SIZE < DEFAULT_MAX_CAPACITY < MAX_SUPPORTED_CAPACITY`
 
 /// Buffer chunk size. (8 KiB)
 ///

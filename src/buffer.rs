@@ -930,7 +930,8 @@ impl Buffer {
     /// Reads from a reader while a predicate holds, growing the buffer as needed.
     ///
     /// After each successful read, the predicate is called with the full unconsumed data
-    /// (`&buf[pos..len]`). Reading continues while the predicate returns `true`.
+    /// (`&self.buf()[self.pos()..self.len()]`). Reading continues while the predicate returns
+    /// `true`.
     ///
     /// Pass a `growth_limit` to cap how large the buffer may grow, or `None` to leave growth
     /// uncapped by the caller. Non-aligned limits are rounded up to the next [`CHUNK_SIZE`]
@@ -1068,9 +1069,9 @@ impl Buffer {
 
     /// Aligns a position backward to the start of the current UTF-8 character.
     ///
-    /// If `pos` falls in the middle of a UTF-8 multi-byte character, this moves backward to the
-    /// start of that character. If already on a character boundary, returns that position.
-    /// The result is clamped to the range `self.pos()..=self.len()`.
+    /// If `offset` falls in the middle of a UTF-8 multi-byte character, this moves backward to the
+    /// start of that character. If already on a character boundary, returns that position. The
+    /// offset is clamped to the range `self.pos()..=self.len()`.
     ///
     /// Note that if `self.pos()` itself is not on a UTF-8 character boundary (e.g., if positioned
     /// within a multi-byte character), the returned position may still not be on a valid character
@@ -1097,23 +1098,23 @@ impl Buffer {
     )]
     #[inline]
     pub fn align_pos_to_char(&self, offset: usize) -> usize {
-        // Get the offset position clamped by: self.pos <= pos <= self.len
-        let offset = cmp::max(offset, self.pos).min(self.len);
+        // Clamp the requested offset to the readable range: self.pos <= offset <= self.len.
+        let clamped = cmp::max(offset, self.pos).min(self.len);
 
         // Find the position of first byte that is not a UTF-8 continuation byte
-        self.buf[self.pos..=offset]
+        self.buf[self.pos..=clamped]
             .iter()
             .rev()
             // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
             .position(|&b| b & 0b1100_0000 != 0b1000_0000)
-            .map_or(self.pos, |i| offset - i)
+            .map_or(self.pos, |i| clamped - i)
     }
 
     /// Aligns a position forward to the start of the next UTF-8 character.
     ///
-    /// If `pos` falls in the middle of a UTF-8 multi-byte character, this moves forward to the
-    /// start of the following character. If already on a character boundary, returns that position.
-    /// The result is clamped to the range `self.pos()..=self.len()`.
+    /// If `offset` falls in the middle of a UTF-8 multi-byte character, this moves forward to the
+    /// start of the following character. If already on a character boundary, returns that
+    /// position. The offset is clamped to the range `self.pos()..=self.len()`.
     ///
     /// Note that if `self.len()` is in the middle of a multi-byte character (e.g., an incomplete
     /// UTF-8 sequence at the end of the buffer), the returned position may still not be on a valid
@@ -1140,15 +1141,15 @@ impl Buffer {
     )]
     #[inline]
     pub fn align_pos_to_next_char(&self, offset: usize) -> usize {
-        // Get the offset position clamped by: self.pos <= pos <= self.len
-        let offset = cmp::max(offset, self.pos).min(self.len);
+        // Clamp the requested offset to the readable range: self.pos <= offset <= self.len.
+        let clamped = cmp::max(offset, self.pos).min(self.len);
 
         // Find the position of first byte that is not a UTF-8 continuation byte
-        self.buf[offset..self.len]
+        self.buf[clamped..self.len]
             .iter()
             // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
             .position(|&b| b & 0b1100_0000 != 0b1000_0000)
-            .map_or(self.len, |i| i + offset)
+            .map_or(self.len, |i| i + clamped)
     }
 
     /// Returns the unconsumed buffer data as a UTF-8 string slice.
@@ -1179,11 +1180,11 @@ impl Buffer {
         self.as_str_from(self.pos)
     }
 
-    /// Returns buffer data as a UTF-8 string slice starting from a specific position.
+    /// Returns buffer data as a UTF-8 string slice starting from a specific offset.
     ///
-    /// Like [`as_str()`](Self::as_str), but starts from a position in the buffer clamped to the
-    /// range `self.pos()..=self.len()`. Automatically handles partial UTF-8 sequences at
-    /// both boundaries.
+    /// Like [`as_str()`](Self::as_str), but starts from an offset in the buffer clamped to the
+    /// range `self.pos()..=self.len()`. Automatically handles partial UTF-8 sequences at both
+    /// boundaries.
     ///
     /// # Examples
     ///
@@ -1205,8 +1206,8 @@ impl Buffer {
         clippy::indexing_slicing,
         reason = "Safe by invariant"
     )]
-    pub fn as_str_from(&self, pos: usize) -> io::Result<&str> {
-        let start = self.align_pos_to_next_char(pos);
+    pub fn as_str_from(&self, offset: usize) -> io::Result<&str> {
+        let start = self.align_pos_to_next_char(offset);
 
         let mut end = self.len;
         while end > start {

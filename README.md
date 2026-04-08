@@ -77,4 +77,5 @@ let reader = Reader::builder(Cursor::new(vec![0u8; 1024]))
 
 ## Minimum Supported Rust Version
 
-The MSRV is **1.87.0**. This is checked in CI across Linux, Windows, and macOS.
+The MSRV is **1.87.0**. CI runs the full quality gate on stable Rust and an MSRV compatibility
+check on Linux.
