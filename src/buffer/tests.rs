@@ -1446,6 +1446,49 @@ fn test_buffer_align_pos_to_char() {
     // Should find 0xF8 at position 4
     let aligned = buffer.align_pos_to_char(4);
     assert_eq!(aligned, 4);
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Full buffer (len == cap): must not panic.
+    buffer.inject_test_data(&[b'A'; CHUNK_SIZE]);
+    assert_eq!(buffer.len(), buffer.cap());
+    let aligned = buffer.align_pos_to_char(buffer.len());
+    assert_eq!(aligned, buffer.len());
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Complete trailing multi-byte char: 世 = [0xE4, 0xB8, 0x96].
+    // self.len is a valid boundary → returns self.len.
+    buffer.inject_test_data(b"Hello\xE4\xB8\x96");
+    let aligned = buffer.align_pos_to_char(buffer.len());
+    assert_eq!(aligned, buffer.len());
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Incomplete trailing 3-byte sequence: first 2 bytes of 世.
+    // self.len is mid-character → returns start of the incomplete sequence.
+    buffer.inject_test_data(b"Hello\xE4\xB8");
+    let aligned = buffer.align_pos_to_char(buffer.len());
+    assert_eq!(aligned, 5); // start of the incomplete sequence
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Incomplete trailing 4-byte sequence: only the leading byte.
+    buffer.inject_test_data(b"Hello\xF0");
+    let aligned = buffer.align_pos_to_char(buffer.len());
+    assert_eq!(aligned, 5);
+
+    // Discard everything for a clean slate
+    buffer.discard();
+
+    // Empty region (pos == len): returns self.len.
+    assert_eq!(buffer.pos(), buffer.len());
+    let aligned = buffer.align_pos_to_char(buffer.len());
+    assert_eq!(aligned, buffer.len());
 }
 
 #[test]

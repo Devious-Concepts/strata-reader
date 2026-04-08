@@ -1073,6 +1073,11 @@ impl Buffer {
     /// start of that character. If already on a character boundary, returns that position. The
     /// offset is clamped to the range `self.pos()..=self.len()`.
     ///
+    /// When `offset` is at (or clamps to) `self.len()`, the function checks whether the trailing
+    /// bytes form a complete UTF-8 sequence. If they do, `self.len()` is returned as a valid
+    /// boundary. If the buffer ends with an incomplete multi-byte character, the position is moved
+    /// back to the start of that incomplete sequence.
+    ///
     /// Note that if `self.pos()` itself is not on a UTF-8 character boundary (e.g., if positioned
     /// within a multi-byte character), the returned position may still not be on a valid character
     /// boundary, as it cannot move before `self.pos()`.
@@ -1101,13 +1106,50 @@ impl Buffer {
         // Clamp the requested offset to the readable range: self.pos <= offset <= self.len.
         let clamped = cmp::max(offset, self.pos).min(self.len);
 
-        // Find the position of first byte that is not a UTF-8 continuation byte
-        self.buf[self.pos..=clamped]
-            .iter()
-            .rev()
-            // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
-            .position(|&b| b & 0b1100_0000 != 0b1000_0000)
-            .map_or(self.pos, |i| clamped - i)
+        if clamped == self.len {
+            // Can't use an inclusive range here: buf[len] is outside the logical content, and
+            // panics when len == cap. Instead, scan the valid bytes to check whether self.len
+            // falls on a complete character boundary.
+            if self.pos == self.len {
+                return self.len;
+            }
+
+            // Find the start of the last byte sequence.
+            let start = self.buf[self.pos..self.len]
+                .iter()
+                .rev()
+                .position(|&b| b & 0b1100_0000 != 0b1000_0000)
+                .map_or(self.pos, |i| self.len - 1 - i);
+
+            // Determine the expected sequence length from the leading byte.
+            let leading = self.buf[start];
+            let expected = if leading & 0b1000_0000 == 0 {
+                1
+            } else if leading & 0b1110_0000 == 0b1100_0000 {
+                2
+            } else if leading & 0b1111_0000 == 0b1110_0000 {
+                3
+            } else if leading & 0b1111_1000 == 0b1111_0000 {
+                4
+            } else {
+                // Invalid leading byte (bare continuation or 0xFF/0xFE), treat as single byte.
+                1
+            };
+
+            if start + expected <= self.len {
+                self.len // Trailing character is complete; self.len is a valid boundary.
+            } else {
+                start // Incomplete trailing sequence; back up to its start.
+            }
+        } else {
+            // Find the position of first byte that is not a UTF-8 continuation byte
+            self.buf[self.pos..=clamped]
+                .iter()
+                .rev()
+                // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
+                .position(|&b| b & 0b1100_0000 != 0b1000_0000)
+                .map_or(self.pos, |i| clamped - i)
+        }
     }
 
     /// Aligns a position forward to the start of the next UTF-8 character.
