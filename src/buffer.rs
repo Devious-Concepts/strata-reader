@@ -154,12 +154,6 @@ pub struct Buffer {
     pos: usize,
 }
 
-impl Default for Buffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Buffer {
     /// Creates a new buffer with the default capacity.
     ///
@@ -641,6 +635,69 @@ impl Buffer {
         self.cap = next;
     }
 
+    /// Grows (unless capped), reads once from `reader`, and updates bookkeeping.
+    ///
+    /// When the buffer is full, `growth_limit` is consulted first. If `Some(limit)` and
+    /// `self.cap >= limit`, the read is skipped and [`ReadOnce::Capped`] is returned. Otherwise
+    /// the buffer grows before reading, using exponential growth when the next step fits within
+    /// the limit and linear growth toward the limit when it would overshoot.
+    ///
+    /// On success the read bytes are appended (`self.len` is advanced) and `*total_bytes_read` is
+    /// incremented.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "Safe by invariant"
+    )]
+    fn read_once(
+        &mut self,
+        reader: &mut impl Read,
+        total_bytes_read: &mut usize,
+        growth_limit: Option<usize>,
+    ) -> io::Result<ReadOnce> {
+        if self.len >= self.cap {
+            debug_assert!(self.len == self.cap);
+
+            if let Some(limit) = growth_limit.map(Self::cap_up_linear) {
+                if self.cap >= limit {
+                    return Ok(ReadOnce::Capped);
+                }
+
+                let next_exponential = Self::cap_up(self.cap + CHUNK_SIZE);
+                if next_exponential > limit {
+                    // Fail closed if a future caller stops normalizing `growth_limit`.
+                    if Self::cap_up_linear(limit) > limit {
+                        return Ok(ReadOnce::Capped);
+                    }
+
+                    self.grow_targeted_linear(limit);
+                } else {
+                    self.grow();
+                }
+            } else {
+                self.grow();
+            }
+        }
+
+        // Fill all available space, retrying on interrupt
+        let bytes_read = loop {
+            match reader.read(&mut self.buf[self.len..self.cap]) {
+                Ok(n) => break n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        };
+
+        if bytes_read == 0 {
+            return Ok(ReadOnce::Eof);
+        }
+
+        self.len += bytes_read;
+        *total_bytes_read += bytes_read;
+
+        Ok(ReadOnce::Read)
+    }
+
     /// Fills the available space in the buffer from a reader.
     ///
     /// Reads data to fill the buffer up to its current capacity without growing the buffer.
@@ -814,69 +871,6 @@ impl Buffer {
         self.len += amt;
 
         Ok(())
-    }
-
-    /// Grows (unless capped), reads once from `reader`, and updates bookkeeping.
-    ///
-    /// When the buffer is full, `growth_limit` is consulted first. If `Some(limit)` and
-    /// `self.cap >= limit`, the read is skipped and [`ReadOnce::Capped`] is returned. Otherwise
-    /// the buffer grows before reading, using exponential growth when the next step fits within
-    /// the limit and linear growth toward the limit when it would overshoot.
-    ///
-    /// On success the read bytes are appended (`self.len` is advanced) and `*total_bytes_read` is
-    /// incremented.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "Safe by invariant"
-    )]
-    fn read_once(
-        &mut self,
-        reader: &mut impl Read,
-        total_bytes_read: &mut usize,
-        growth_limit: Option<usize>,
-    ) -> io::Result<ReadOnce> {
-        if self.len >= self.cap {
-            debug_assert!(self.len == self.cap);
-
-            if let Some(limit) = growth_limit.map(Self::cap_up_linear) {
-                if self.cap >= limit {
-                    return Ok(ReadOnce::Capped);
-                }
-
-                let next_exponential = Self::cap_up(self.cap + CHUNK_SIZE);
-                if next_exponential > limit {
-                    // Fail closed if a future caller stops normalizing `growth_limit`.
-                    if Self::cap_up_linear(limit) > limit {
-                        return Ok(ReadOnce::Capped);
-                    }
-
-                    self.grow_targeted_linear(limit);
-                } else {
-                    self.grow();
-                }
-            } else {
-                self.grow();
-            }
-        }
-
-        // Fill all available space, retrying on interrupt
-        let bytes_read = loop {
-            match reader.read(&mut self.buf[self.len..self.cap]) {
-                Ok(n) => break n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
-        };
-
-        if bytes_read == 0 {
-            return Ok(ReadOnce::Eof);
-        }
-
-        self.len += bytes_read;
-        *total_bytes_read += bytes_read;
-
-        Ok(ReadOnce::Read)
     }
 
     /// Reads from a reader until EOF, growing the buffer as needed.
@@ -1378,6 +1372,12 @@ impl Buffer {
         self.shrink_targeted(starting_capacity);
 
         Ok(UnboundedFillResult::Complete(total_bytes_read))
+    }
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

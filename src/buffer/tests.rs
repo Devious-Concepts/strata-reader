@@ -104,10 +104,6 @@ fn test_unbounded_fill_result_from_fill_result() {
 // Buffer - Creation
 // -----------------------------------------------------------------------------
 
-/* Coverage note: `Default` is a thin wrapper over `new`.
- * Its behavior is covered by the `new` tests.
- */
-
 #[test]
 fn test_buffer_new() {
     let buffer = Buffer::new();
@@ -121,6 +117,10 @@ fn test_buffer_new() {
     assert_eq!(buffer.len, 0);
     assert_eq!(buffer.pos, 0);
 }
+
+/* Coverage note: `Default` is a thin wrapper over `new`.
+ * Its behavior is covered by the `new` tests.
+ */
 
 #[test]
 fn test_buffer_with_capacity() {
@@ -734,6 +734,27 @@ fn test_buffer_shrink_targeted() {
 }
 
 // -----------------------------------------------------------------------------
+// Buffer - read_once
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_buffer_read_once() {
+    // `read_once` is private, so test it through `fill`; the key behavior is Interrupted retry.
+
+    // Interrupted retry, read_once retries on Interrupted, then succeeds
+    let mut buffer = Buffer::new();
+    let reader = InterruptOnceReader {
+        inner: Cursor::new("Hello!"),
+        interrupted: false,
+    };
+    let read = buffer.fill(reader).unwrap();
+
+    // Success proves `Interrupted` was retried; otherwise `fill` would return the first error.
+    assert_eq!(read, FillResult::Eof(6));
+    assert_eq!(buffer.buf(), b"Hello!");
+}
+
+// -----------------------------------------------------------------------------
 // Buffer - Fill
 // -----------------------------------------------------------------------------
 
@@ -956,27 +977,6 @@ fn test_buffer_fill_exact() {
 /* Coverage note: `fill_exact` relies on `grow_targeted_linear` for preallocation.
  * That helper is tested separately; this section covers `fill_exact`-specific behavior.
  */
-
-// -----------------------------------------------------------------------------
-// Buffer - read_once
-// -----------------------------------------------------------------------------
-
-#[test]
-fn test_buffer_read_once() {
-    // `read_once` is private, so test it through `fill`; the key behavior is Interrupted retry.
-
-    // Interrupted retry, read_once retries on Interrupted, then succeeds
-    let mut buffer = Buffer::new();
-    let reader = InterruptOnceReader {
-        inner: Cursor::new("Hello!"),
-        interrupted: false,
-    };
-    let read = buffer.fill(reader).unwrap();
-
-    // Success proves `Interrupted` was retried; otherwise `fill` would return the first error.
-    assert_eq!(read, FillResult::Eof(6));
-    assert_eq!(buffer.buf(), b"Hello!");
-}
 
 // -----------------------------------------------------------------------------
 // Buffer - fill_to_end
