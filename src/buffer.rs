@@ -699,19 +699,16 @@ impl Buffer {
         Ok(ReadOnce::Read)
     }
 
-    /// Fills the available space in the buffer from a reader.
+    /// Performs a single read into the buffer's available space without growing.
     ///
-    /// Reads data to fill the buffer up to its current capacity without growing the buffer.
-    ///
-    /// This method keeps reading until the buffer has no free space left, the reader reaches EOF,
-    /// or an error occurs. It may therefore perform multiple underlying `read` calls in a single
-    /// invocation.
+    /// Makes one read call (retrying on interrupts) to fill available space in the buffer up to
+    /// its current capacity. Does not loop to fill the buffer completely.
     ///
     /// Returns a [`FillResult`] with the number of bytes read and context about how the operation
     /// completed:
     ///
-    /// - [`FillResult::Complete`]: The buffer was filled to capacity (or was already full).
-    /// - [`FillResult::Eof`]: The reader reached end-of-file before filling the buffer.
+    /// - [`FillResult::Complete`]: Some bytes were read, or the buffer was already full.
+    /// - [`FillResult::Eof`]: The reader returned 0 bytes (end-of-file).
     ///
     /// Both variants represent successful operations, the byte count may be 0 if the buffer is
     /// already full or the reader is at EOF.
@@ -724,7 +721,7 @@ impl Buffer {
     /// let mut buffer = Buffer::new();
     /// let mut reader = Cursor::new(b"Hello, World!");
     /// let result = buffer.fill(&mut reader).unwrap();
-    /// assert!(matches!(result, FillResult::Eof(13)));
+    /// assert!(matches!(result, FillResult::Complete(13)));
     /// assert_eq!(buffer.len(), 13);
     ///
     /// // Reading from EOF returns Eof(0)
@@ -738,13 +735,10 @@ impl Buffer {
     pub fn fill(&mut self, mut reader: impl Read) -> io::Result<FillResult> {
         let mut total_bytes_read = 0;
 
-        loop {
-            // This is a non-growing method so hitting the current cap means `Complete`
-            match self.read_once(&mut reader, &mut total_bytes_read, Some(self.cap))? {
-                ReadOnce::Capped => return Ok(FillResult::Complete(total_bytes_read)),
-                ReadOnce::Eof => return Ok(FillResult::Eof(total_bytes_read)),
-                ReadOnce::Read => {}
-            }
+        // Single read attempt; read_once already retries on interrupts
+        match self.read_once(&mut reader, &mut total_bytes_read, Some(self.cap))? {
+            ReadOnce::Capped | ReadOnce::Read => Ok(FillResult::Complete(total_bytes_read)),
+            ReadOnce::Eof => Ok(FillResult::Eof(total_bytes_read)),
         }
     }
 

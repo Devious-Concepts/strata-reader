@@ -26,19 +26,6 @@ impl<R: Read> Read for InterruptOnceReader<R> {
     }
 }
 
-/// A reader that yields at most `chunk_size` bytes per successful read.
-pub(crate) struct ChunkedReader<R> {
-    pub(crate) inner: R,
-    pub(crate) chunk_size: usize,
-}
-
-impl<R: Read> Read for ChunkedReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let len = buf.len().min(self.chunk_size);
-        self.inner.read(&mut buf[..len])
-    }
-}
-
 impl Buffer {
     /// Test helper to append data directly into the buffer.
     ///
@@ -735,20 +722,23 @@ fn test_buffer_shrink_targeted() {
 
 #[test]
 fn test_buffer_read_once() {
-    // `read_once` is private, so test it through `fill`; the key behavior is Interrupted retry.
-
-    // Interrupted retry, read_once retries on Interrupted, then succeeds
+    // Interrupt retry: read_once retries on Interrupted, then succeeds
     let mut buffer = Buffer::new();
-    let reader = InterruptOnceReader {
+    let mut reader = InterruptOnceReader {
         inner: Cursor::new("Hello!"),
         interrupted: false,
     };
-    let read = buffer.fill(reader).unwrap();
+    let mut total = 0;
+    let result = buffer.read_once(&mut reader, &mut total, Some(buffer.cap()));
 
-    // Success proves `Interrupted` was retried; otherwise `fill` would return the first error.
-    assert_eq!(read, FillResult::Eof(6));
+    assert_eq!(result.unwrap(), ReadOnce::Read);
+    assert_eq!(total, 6);
     assert_eq!(buffer.buf(), b"Hello!");
 }
+
+/* Coverage note: `read_once` Read, Eof, Capped, and growth paths are exercised
+ * by the `fill`, `fill_amount`, `fill_to_end`, and `fill_while` tests.
+ */
 
 // -----------------------------------------------------------------------------
 // Buffer - Fill
@@ -777,7 +767,7 @@ fn test_buffer_fill() {
         let read = buffer.fill(cur).unwrap();
 
         // All bytes should have been read and the data should match
-        assert_eq!(read, FillResult::Eof(data.len()));
+        assert_eq!(read, FillResult::Complete(data.len()));
         assert_eq!(
             &buffer.buf()[(buffer.len() - read.count())..],
             data.as_bytes()
@@ -805,20 +795,6 @@ fn test_buffer_fill() {
 
     // We should have not read anything
     assert_eq!(read, FillResult::Complete(0));
-
-    // A single call keeps reading until the buffer is full, even if the reader only yields chunks
-    let mut buffer = Buffer::new();
-    let data = vec![b'x'; CHUNK_SIZE];
-    let reader = ChunkedReader {
-        inner: Cursor::new(&data),
-        chunk_size: 127,
-    };
-    let read = buffer.fill(reader).unwrap();
-
-    // The buffer should have read all the data
-    assert_eq!(read, FillResult::Complete(CHUNK_SIZE));
-    assert_eq!(buffer.len(), CHUNK_SIZE);
-    assert_eq!(buffer.buf(), data.as_slice());
 }
 
 #[test]

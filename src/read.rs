@@ -58,9 +58,7 @@ pub trait DynamicRead: BufRead {
         self.shrink();
     }
 
-    /// Reads from the underlying reader into available buffer space.
-    ///
-    /// Fills the free space in the buffer without growing, preserving existing data.
+    /// Performs a single read from the underlying reader into available buffer space.
     ///
     /// Returns the number of bytes read, or `0` if the buffer is full or no more data could be
     /// read.
