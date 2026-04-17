@@ -1,6 +1,7 @@
 //! Tests for the Reader
 
 #![expect(
+    clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::unwrap_used,
     reason = "Okay in tests"
@@ -660,7 +661,7 @@ fn test_reader_into_inner() {
     reader.fill_amount(data.len()).unwrap();
 
     // Recover the inner reader
-    let inner = reader.into_inner();
+    let (inner, _) = reader.into_parts();
     assert_eq!(inner.position(), data.len() as u64);
 }
 
@@ -689,24 +690,23 @@ fn test_reader_debug() {
     let reader = Reader::new(cur);
     let debug = format!("{reader:?}");
 
-    // Should contain the struct name and reader info
+    // Should contain the struct name and the delegated sub-struct
     assert!(debug.contains("Reader"));
     assert!(debug.contains("reader"));
-    assert!(debug.contains("buffer"));
+    assert!(debug.contains("max_capacity"));
+    assert!(debug.contains("buffer: Buffer { pos: 0, len: 0"));
 
-    // With data in the buffer
+    // With data in the buffer, pos and len should reflect the fill.
     let cur = Cursor::new("Hello, World!");
     let mut reader = Reader::new(cur);
     reader.fill_amount(13).unwrap();
     let debug = format!("{reader:?}");
+    assert!(debug.contains("buffer: Buffer { pos: 0, len: 13"));
 
-    // Buffer field should show unconsumed/capacity
-    assert!(debug.contains("13/"));
-
-    // After consuming some data
+    // After consuming some data, pos should move and len should stay put.
     reader.consume(5);
     let debug = format!("{reader:?}");
-    assert!(debug.contains("8/"));
+    assert!(debug.contains("buffer: Buffer { pos: 5, len: 13"));
 }
 
 // -----------------------------------------------------------------------------
@@ -875,3 +875,4 @@ fn test_reader_seek_relative() {
     assert_eq!(reader.buffer.pos(), 5);
     assert_eq!(reader.buffer.len(), data.len()); // Buffer NOT invalidated
 }
+

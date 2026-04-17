@@ -58,6 +58,7 @@
     "MSRV",
     "MSVC",
     "Swatinem",
+    "VecDeque",
     "bufread",
     "dtolnay",
     "expl_impl_clone_on_copy",

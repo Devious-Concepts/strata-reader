@@ -1819,12 +1819,8 @@ fn test_buffer_fill_until_str() {
  */
 
 // -----------------------------------------------------------------------------
-// Buffer - Default, Clone, and PartialEq
+// Buffer - Clone, PartialEq, Debug, and Default
 // -----------------------------------------------------------------------------
-
-/* Coverage note: `Default` is a thin wrapper over `new`.
- * Its behavior is covered by the `new` tests.
- */
 
 #[test]
 fn test_buffer_clone() {
@@ -1873,3 +1869,36 @@ fn test_buffer_partial_eq() {
 
     assert_ne!(left, right);
 }
+
+#[test]
+fn test_buffer_debug() {
+    let mut buffer = Buffer::with_capacity(4 * CHUNK_SIZE);
+    buffer.inject_test_data(b"abcdef");
+    buffer.pos = 2;
+
+    // Write a distinct byte into spare capacity to prove it is not printed.
+    buffer.buf[buffer.len] = b'x';
+
+    let debug = format!("{buffer:?}");
+    let pretty = format!("{buffer:#?}");
+
+    // Only the logical cursors are exposed; the raw byte storage is omitted,
+    // marked as non-exhaustive with a trailing `..`.
+    assert_eq!(
+        debug,
+        format!("Buffer {{ pos: 2, len: 6, cap: {}, .. }}", 4 * CHUNK_SIZE)
+    );
+    assert!(pretty.starts_with("Buffer {\n"));
+    assert!(pretty.contains("pos: 2,"));
+    assert!(pretty.contains("len: 6,"));
+    assert!(pretty.contains(&format!("cap: {},", 4 * CHUNK_SIZE)));
+    assert!(pretty.contains(".."));
+
+    // No raw buffer bytes leak into the output, regardless of format flavor.
+    assert!(!debug.contains("abcdef"));
+    assert!(!pretty.contains("abcdef"));
+}
+
+/* Coverage note: `Default` is a thin wrapper over `new`.
+ * Its behavior is covered by the `new` tests.
+ */

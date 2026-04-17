@@ -28,6 +28,7 @@
 
 use crate::constants::{CHUNK_SIZE, MAX_EXPONENTIAL_CAPACITY, MAX_SUPPORTED_CAPACITY};
 use std::cmp;
+use std::fmt::{self, Debug};
 use std::io::{self, Read};
 
 /// Result type for bounded fill operations.
@@ -140,7 +141,7 @@ enum ReadOnce {
 ///
 /// This buffer maintains the invariant `0 <= self.pos <= self.len <= self.cap == self.buf.len() <=
 /// self.buf.capacity()` at all times, ensuring memory safety and correctness of all operations.
-#[derive(Debug, Eq)]
+#[derive(Eq)]
 pub struct Buffer {
     /// Internal buffer storage.
     buf: Vec<u8>,
@@ -1370,12 +1371,6 @@ impl Buffer {
     }
 }
 
-impl Default for Buffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Clone for Buffer {
     #[inline]
     fn clone(&self) -> Self {
@@ -1397,6 +1392,22 @@ impl PartialEq for Buffer {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.pos == other.pos && self.buf() == other.buf()
+    }
+}
+
+impl Debug for Buffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Buffer")
+            .field("pos", &self.pos)
+            .field("len", &self.len)
+            .field("cap", &self.cap)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
