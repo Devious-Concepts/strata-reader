@@ -79,5 +79,5 @@ pub mod constants;
 mod read;
 mod reader;
 
-pub use read::DynamicRead;
+pub use read::{DynamicRead, DynamicReadExt};
 pub use reader::{Reader, ReaderBuilder};

@@ -20,6 +20,19 @@ use std::io::{self, BufRead};
 /// - [`compact()`](Self::compact): Moves unconsumed data to the start, making room for more reads
 /// - [`clear()`](Self::clear): Abandons all buffered data without changing capacity
 /// - [`discard()`](Self::discard): Resets the buffer to an empty, minimal-capacity state
+///
+/// # Filling
+///
+/// Two methods drive reads into the buffer:
+/// - [`fill()`](Self::fill): Performs a single read into available space
+/// - [`fill_while_dyn()`](Self::fill_while_dyn): Reads repeatedly until a predicate is satisfied
+///
+/// Most callers should use the generic-predicate wrapper [`DynamicReadExt::fill_while`] rather than
+/// calling `fill_while_dyn` directly.
+///
+/// # Implementing
+///
+/// Implement `DynamicRead` directly; [`DynamicReadExt`] is a blanket impl.
 pub trait DynamicRead: BufRead {
     /// Returns the data currently retained in the buffer.
     ///
@@ -66,6 +79,9 @@ pub trait DynamicRead: BufRead {
 
     /// Reads from the underlying reader while `predicate` returns `true`.
     ///
+    /// Object-safe primitive; the generic-predicate wrapper [`DynamicReadExt::fill_while`]
+    /// delegates here.
+    ///
     /// The predicate is called before each read with the current unconsumed data, not just newly
     /// read data.
     ///
@@ -75,6 +91,19 @@ pub trait DynamicRead: BufRead {
     /// Returns the total number of new bytes read. A return of `0` when the predicate still returns
     /// `true` means it could not read more. See the implementor's documentation for specific
     /// conditions.
+    fn fill_while_dyn(&mut self, predicate: &mut dyn FnMut(&[u8]) -> bool) -> io::Result<usize>;
+}
+
+/// Ergonomic extensions to [`DynamicRead`].
+///
+/// Wraps the object-safe methods on [`DynamicRead`] with generic-predicate forms that monomorphize
+/// at the call site. Blanket-implemented for every `DynamicRead` implementor (including `&mut dyn
+/// DynamicRead`), so do not implement it directly.
+pub trait DynamicReadExt: DynamicRead {
+    /// Reads from the underlying reader while `predicate` returns `true`.
+    ///
+    /// Generic-predicate wrapper around [`DynamicRead::fill_while_dyn`]; see that method for the
+    /// full contract and the implementor's documentation for stop conditions.
     ///
     /// # Examples
     ///
@@ -96,7 +125,12 @@ pub trait DynamicRead: BufRead {
     ///     // predicate unsatisfied, could not read more
     /// }
     /// ```
-    fn fill_while<P>(&mut self, predicate: P) -> io::Result<usize>
+    fn fill_while<P>(&mut self, mut predicate: P) -> io::Result<usize>
     where
-        P: FnMut(&[u8]) -> bool;
+        P: FnMut(&[u8]) -> bool,
+    {
+        self.fill_while_dyn(&mut predicate)
+    }
 }
+
+impl<T: DynamicRead + ?Sized> DynamicReadExt for T {}

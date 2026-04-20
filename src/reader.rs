@@ -1,6 +1,6 @@
-use crate::DynamicRead;
 use crate::buffer::Buffer;
 use crate::constants::DEFAULT_MAX_CAPACITY;
+use crate::read::{DynamicRead, DynamicReadExt};
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
 
 /// A builder for constructing a [`Reader`] with custom capacity settings.
@@ -422,7 +422,7 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
 
     /// Reads from the underlying reader while `predicate` returns `true`.
     ///
-    /// See [`DynamicRead::fill_while`] for the general contract.
+    /// See [`DynamicRead::fill_while_dyn`] for the general contract.
     ///
     /// This implementation returns `0` without reading in three cases:
     ///
@@ -430,13 +430,10 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
     /// - The underlying reader reached EOF while the predicate was still unsatisfied.
     /// - The buffer reached [`max_capacity`](ReaderBuilder::max_capacity)
     ///   while the predicate was still unsatisfied.
-    fn fill_while<P>(&mut self, predicate: P) -> io::Result<usize>
-    where
-        P: FnMut(&[u8]) -> bool,
-    {
+    fn fill_while_dyn(&mut self, predicate: &mut dyn FnMut(&[u8]) -> bool) -> io::Result<usize> {
         self.buffer
             .fill_while(&mut self.reader, predicate, Some(self.max_capacity))
-            .map(|r| r.count())
+            .map(|reader| reader.count())
     }
 }
 
