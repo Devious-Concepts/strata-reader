@@ -1,48 +1,30 @@
 use std::io::{self, BufRead};
 
-/// Extension of [`BufRead`] with dynamic buffer capacity management.
+/// Extension of [`std::io::BufRead`] with dynamic buffer capacity management.
 ///
-/// This trait extends the standard [`BufRead`] trait with methods to observe and manage the
-/// internal buffer's memory. The buffer grows automatically during read operations as needed, while
-/// shrinking is left to the user to control.
+/// Provides access to the retained buffer contents and methods to manage its memory. The buffer
+/// grows automatically during reads as needed; shrinking is explicit.
 ///
-/// # Buffer Inspection
+/// Methods on this trait do not silently discard retained consumed data during reads. That
+/// guarantee does not extend to inherited methods from [`std::io::BufRead`] or [`std::io::Read`],
+/// which keep their own contracts.
 ///
-/// Use [`buffer()`](Self::buffer) to access the data currently retained in the buffer,
-/// [`pos()`](Self::pos) to find where unconsumed data begins when consumed data is retained, and
-/// [`capacity()`](Self::capacity) to observe the total buffer size. These are useful for deciding
-/// when to reclaim memory with [`shrink()`](Self::shrink) or [`compact()`](Self::compact).
+/// Use [`buffer()`](Self::buffer), [`pos()`](Self::pos), and [`capacity()`](Self::capacity) to
+/// inspect the retained buffer. Use [`shrink()`](Self::shrink), [`compact()`](Self::compact),
+/// [`clear()`](Self::clear), and [`discard()`](Self::discard) to manage it. Use
+/// [`fill()`](Self::fill) for a single read or [`fill_while_dyn()`](Self::fill_while_dyn) to read
+/// until a predicate is satisfied. Most callers should prefer
+/// [`DynamicReadExt::fill_while`].
 ///
-/// # Buffer Operations
-///
-/// Four methods handle buffer data management:
-/// - [`shrink()`](Self::shrink): Reclaims unused memory, shrinking to fit current data
-/// - [`compact()`](Self::compact): Moves unconsumed data to the start, making room for more reads
-/// - [`clear()`](Self::clear): Abandons all buffered data without changing capacity
-/// - [`discard()`](Self::discard): Resets the buffer to an empty, minimal-capacity state
-///
-/// # Filling
-///
-/// Two methods drive reads into the buffer:
-/// - [`fill()`](Self::fill): Performs a single read into available space
-/// - [`fill_while_dyn()`](Self::fill_while_dyn): Reads repeatedly until a predicate is satisfied
-///
-/// Most callers should use the generic-predicate wrapper [`DynamicReadExt::fill_while`] rather than
-/// calling `fill_while_dyn` directly.
-///
-/// # Implementing
-///
-/// Implement `DynamicRead` directly; [`DynamicReadExt`] is a blanket impl.
+/// Implement `DynamicRead` directly; [`DynamicReadExt`] is blanket-implemented.
 pub trait DynamicRead: BufRead {
     /// Returns the data currently retained in the buffer.
     ///
-    /// Implementations may retain consumed bytes for inspection or seeking. When they do, the
-    /// unconsumed portion starts at [`pos()`](Self::pos).
+    /// This may include consumed bytes; use [`pos()`](Self::pos) to find where the unconsumed
+    /// portion begins.
     fn buffer(&self) -> &[u8];
 
-    /// Returns the current read position within the buffer.
-    ///
-    /// This is the offset where unconsumed data begins.
+    /// Returns the offset of the unconsumed portion within [`buffer()`](Self::buffer).
     fn pos(&self) -> usize;
 
     /// Returns the current buffer capacity in bytes.
@@ -50,8 +32,7 @@ pub trait DynamicRead: BufRead {
 
     /// Shrinks the buffer capacity to fit the current data.
     ///
-    /// Reclaims unused memory by reducing the buffer's capacity. The resulting capacity is
-    /// implementation-defined but will be sufficient to hold all data.
+    /// The resulting capacity is implementation-defined but sufficient to hold all retained data.
     fn shrink(&mut self);
 
     /// Moves unconsumed data to the start of the buffer.
@@ -71,7 +52,8 @@ pub trait DynamicRead: BufRead {
         self.shrink();
     }
 
-    /// Performs a single read from the underlying reader into available buffer space.
+    /// Performs a single read, retrying if interrupted, from the underlying reader into available
+    /// buffer space.
     ///
     /// Returns the number of bytes read, or `0` if the buffer is full or no more data could be
     /// read.
@@ -79,31 +61,26 @@ pub trait DynamicRead: BufRead {
 
     /// Reads from the underlying reader while `predicate` returns `true`.
     ///
-    /// Object-safe primitive; the generic-predicate wrapper [`DynamicReadExt::fill_while`]
-    /// delegates here.
+    /// Object-safe primitive used by [`DynamicReadExt::fill_while`].
     ///
-    /// The predicate is called before each read with the current unconsumed data, not just newly
+    /// Before each read, `predicate` is called with the current unconsumed data, not just newly
     /// read data.
     ///
-    /// For implementations that retain consumed bytes in [`buffer()`](Self::buffer), this is the
-    /// portion starting at [`pos()`](Self::pos).
-    ///
-    /// Returns the total number of new bytes read. A return of `0` when the predicate still returns
-    /// `true` means it could not read more. See the implementor's documentation for specific
+    /// Returns the total number of new bytes read. A return of `0` while `predicate` still returns
+    /// `true` means it could not read more. See the implementor's documentation for specific stop
     /// conditions.
     fn fill_while_dyn(&mut self, predicate: &mut dyn FnMut(&[u8]) -> bool) -> io::Result<usize>;
 }
 
 /// Ergonomic extensions to [`DynamicRead`].
 ///
-/// Wraps the object-safe methods on [`DynamicRead`] with generic-predicate forms that monomorphize
-/// at the call site. Blanket-implemented for every `DynamicRead` implementor (including `&mut dyn
-/// DynamicRead`), so do not implement it directly.
+/// Provides generic wrappers around object-safe [`DynamicRead`] methods. Blanket-implemented for
+/// every `DynamicRead` implementor, including `&mut dyn DynamicRead`, so do not implement it
+/// directly.
 pub trait DynamicReadExt: DynamicRead {
     /// Reads from the underlying reader while `predicate` returns `true`.
     ///
-    /// Generic-predicate wrapper around [`DynamicRead::fill_while_dyn`]; see that method for the
-    /// full contract and the implementor's documentation for stop conditions.
+    /// Generic wrapper around [`DynamicRead::fill_while_dyn`]; see that method for the contract.
     ///
     /// # Examples
     ///
