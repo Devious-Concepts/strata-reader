@@ -252,8 +252,8 @@ impl<R: Read + ?Sized> Read for Reader<R> {
     }
 
     // Like BufReader, clear our buffer and delegate if the inner reader optimizes `read_to_end`
-    #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
-    #[expect(clippy::arithmetic_side_effects, reason = "Would OOM before overflow")]
+    #[expect(clippy::indexing_slicing, reason = "pos ≤ len by Buffer invariant")]
+    #[expect(clippy::arithmetic_side_effects, reason = "would OOM before overflow")]
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         // Get unconsumed data from the internal buffer
         let unconsumed = &self.buffer.buf()[self.buffer.pos()..];
@@ -323,11 +323,8 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         }
     }
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "Safe by invariant or bounds checks"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "would OOM before overflow")]
+    #[expect(clippy::indexing_slicing, reason = "pos ≤ buf.len() by loop guard")]
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
         if let Some(slice) = self
             .buffer
@@ -365,7 +362,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 }
 
 impl<R: Read + ?Sized> BufRead for Reader<R> {
-    #[expect(clippy::indexing_slicing, reason = "Buffer invariant makes it safe")]
+    #[expect(clippy::indexing_slicing, reason = "pos ≤ len by Buffer invariant")]
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if self.buffer.pos() >= self.buffer.len() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
@@ -439,9 +436,12 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
 
 #[expect(
     clippy::arithmetic_side_effects,
+    reason = "pos ≤ len by Buffer invariant"
+)]
+#[expect(
     clippy::as_conversions,
     clippy::cast_possible_wrap,
-    reason = "len - pos safe by buffer invariant; usize→i64 cast safe: buffer size ≤ max_capacity ≪ i64::MAX"
+    reason = "buffer size ≤ max_capacity ≪ i64::MAX"
 )]
 impl<R: Read + Seek + ?Sized> Seek for Reader<R> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
@@ -469,10 +469,13 @@ impl<R: Read + Seek + ?Sized> Reader<R> {
     /// to the underlying reader and the buffer is invalidated.
     #[expect(
         clippy::arithmetic_side_effects,
-        clippy::as_conversions,
+        reason = "pos ≤ len by Buffer invariant"
+    )]
+    #[expect(clippy::as_conversions, reason = "casts are lossless or range-checked")]
+    #[expect(clippy::cast_sign_loss, reason = "non-negative i64 fits in u64")]
+    #[expect(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "len - pos safe by buffer invariant; narrowing casts guarded by u64 range checks against buffer-sized values"
+        reason = "values bounded by buffer positions, which fit in usize"
     )]
     pub fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
         let pos = self.buffer.pos();
