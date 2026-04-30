@@ -155,6 +155,46 @@ pub struct Buffer {
     pos: usize,
 }
 
+impl Clone for Buffer {
+    #[inline]
+    fn clone(&self) -> Self {
+        let cap = Self::cap_up_linear(self.len);
+        let mut buf = Vec::with_capacity(cap);
+        buf.extend_from_slice(self.buf());
+        buf.resize(cap, 0);
+
+        Self {
+            buf,
+            cap,
+            len: self.len,
+            pos: self.pos,
+        }
+    }
+}
+
+impl PartialEq for Buffer {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos && self.buf() == other.buf()
+    }
+}
+
+impl Debug for Buffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Buffer")
+            .field("pos", &self.pos)
+            .field("len", &self.len)
+            .field("cap", &self.cap)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Buffer {
     /// Creates a new buffer with the default capacity.
     ///
@@ -1368,46 +1408,6 @@ impl Buffer {
         self.shrink_targeted(starting_capacity);
 
         Ok(UnboundedFillResult::Complete(total_bytes_read))
-    }
-}
-
-impl Clone for Buffer {
-    #[inline]
-    fn clone(&self) -> Self {
-        let cap = Self::cap_up_linear(self.len);
-        let mut buf = Vec::with_capacity(cap);
-        buf.extend_from_slice(self.buf());
-        buf.resize(cap, 0);
-
-        Self {
-            buf,
-            cap,
-            len: self.len,
-            pos: self.pos,
-        }
-    }
-}
-
-impl PartialEq for Buffer {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.pos == other.pos && self.buf() == other.buf()
-    }
-}
-
-impl Debug for Buffer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Buffer")
-            .field("pos", &self.pos)
-            .field("len", &self.len)
-            .field("cap", &self.cap)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Default for Buffer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
