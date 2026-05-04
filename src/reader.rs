@@ -1,6 +1,6 @@
 use crate::buffer::Buffer;
 use crate::constants::DEFAULT_MAX_CAPACITY;
-use crate::read::{DynamicRead, DynamicReadExt};
+use crate::read::DynamicRead;
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
 
 /// A builder for constructing a [`Reader`] with custom capacity settings.
@@ -22,7 +22,7 @@ impl<R: Read> ReaderBuilder<R> {
         self
     }
 
-    /// Sets the maximum buffer capacity. Defaults to [`DEFAULT_MAX_CAPACITY`].
+    /// Sets the maximum buffer capacity.
     pub fn max_capacity(mut self, cap: usize) -> Self {
         self.max_capacity = Some(cap);
         self
@@ -54,158 +54,14 @@ pub struct Reader<R: ?Sized> {
     reader: R,
 }
 
-impl<R: Read> Reader<R> {
-    /// Creates a new `Reader` with default configuration.
-    ///
-    /// The buffer starts at the default capacity and can grow up to [`DEFAULT_MAX_CAPACITY`].
-    pub fn new(reader: R) -> Reader<R> {
-        Reader::builder(reader).build()
-    }
-
-    /// Returns a [`ReaderBuilder`] for configuring a new `Reader`.
-    pub fn builder(reader: R) -> ReaderBuilder<R> {
-        ReaderBuilder {
-            reader,
-            initial_capacity: None,
-            max_capacity: None,
-        }
-    }
-}
-
-impl<R> Reader<R> {
-    pub fn into_parts(self) -> (R, Buffer) {
-        (self.reader, self.buffer)
-    }
-}
-
-impl<R: ?Sized> Reader<R> {
-    /// Returns a reference to the underlying reader.
-    pub fn get_ref(&self) -> &R {
-        &self.reader
-    }
-
-    /// Returns a mutable reference to the underlying reader.
-    ///
-    /// It is inadvisable to directly read from the underlying reader, as data that has already been
-    /// buffered will be lost.
-    pub fn get_mut(&mut self) -> &mut R {
-        &mut self.reader
-    }
-
-    /// Returns the maximum buffer capacity configured for this reader.
-    pub fn max_capacity(&self) -> usize {
-        self.max_capacity
-    }
-
-    /// Returns up to `n` unconsumed bytes without advancing the read position.
-    ///
-    /// If fewer than `n` unconsumed bytes are available, the returned slice contains only what is
-    /// available. Returns an empty slice when there is no unconsumed data.
-    #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
-    pub fn peek(&self, n: usize) -> &[u8] {
-        let start = self.buffer.pos();
-        let end = self.buffer.len().min(start.saturating_add(n));
-        &self.buffer.buf()[start..end]
-    }
-
-    /// Returns up to `n` consumed bytes immediately before the read position.
-    ///
-    /// The standard [`Read`]/[`BufRead`]/[`Seek`] methods don't know retained consumed bytes exist,
-    /// so any of them that fetches from the inner reader, or seeks, drop the retained prefix.
-    ///
-    /// If fewer than `n` consumed bytes are retained, the returned slice contains only what is
-    /// available. Returns an empty slice when no consumed data is retained.
-    #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
-    pub fn peek_behind(&self, n: usize) -> &[u8] {
-        let end = self.buffer.pos();
-        let start = end.saturating_sub(n);
-        &self.buffer.buf()[start..end]
-    }
-}
-
-impl<R: Read + ?Sized> Reader<R> {
-    /// Fills the buffer with at least `amt` bytes from the underlying reader, growing as needed.
-    ///
-    /// Returns the total number of bytes read. If the reader reaches EOF before `amt` bytes are
-    /// read, the partial count is returned (without error).
-    ///
-    /// Returns an error if the request would cause the buffer to exceed `max_capacity`.
-    pub fn fill_amount(&mut self, amt: usize) -> io::Result<usize> {
-        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "requested amount exceeds maximum buffer capacity",
-            ));
-        }
-
-        self.buffer
-            .fill_amount(&mut self.reader, amt)
-            .map(|r| r.count())
-    }
-
-    /// Fills the buffer with exactly `amt` bytes from the underlying reader, growing as needed.
-    ///
-    /// Returns an error if the reader reaches EOF before `amt` bytes are read
-    /// ([`UnexpectedEof`](io::ErrorKind::UnexpectedEof)), or if the request would cause the buffer
-    /// to exceed `max_capacity` ([`InvalidInput`](io::ErrorKind::InvalidInput)).
-    pub fn fill_exact(&mut self, amt: usize) -> io::Result<()> {
-        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "requested amount exceeds maximum buffer capacity",
-            ));
-        }
-
-        self.buffer.fill_exact(&mut self.reader, amt)
-    }
-
-    /// Reads from the underlying reader until EOF or `max_capacity` is reached.
-    ///
-    /// Returns the total number of bytes read.
-    pub fn fill_to_end(&mut self) -> io::Result<usize> {
-        // Can't use Buffer::fill_to_end since it doesn't take a growth limit.
-        self.fill_while(|_| true)
-    }
-
-    /// Reads from the underlying reader until a byte delimiter is found, EOF, or `max_capacity`
-    /// is reached. Only newly-read data is scanned for `byte` each iteration.
-    ///
-    /// Returns the total number of bytes read.
-    pub fn fill_until(&mut self, byte: u8) -> io::Result<usize> {
-        self.buffer
-            .fill_until(&mut self.reader, byte, Some(self.max_capacity))
-            .map(|reader| reader.count())
-    }
-
-    /// Reads from the underlying reader until a character delimiter is found, EOF, or
-    /// `max_capacity` is reached. Multi-byte characters that span read boundaries are handled
-    /// correctly.
-    ///
-    /// Returns the total number of bytes read.
-    pub fn fill_until_char(&mut self, ch: char) -> io::Result<usize> {
-        self.buffer
-            .fill_until_char(&mut self.reader, ch, Some(self.max_capacity))
-            .map(|reader| reader.count())
-    }
-
-    /// Reads from the underlying reader until a string delimiter is found, EOF, or `max_capacity`
-    /// is reached. Matches that span read boundaries are handled correctly.
-    ///
-    /// Returns the total number of bytes read.
-    pub fn fill_until_str(&mut self, needle: &str) -> io::Result<usize> {
-        self.buffer
-            .fill_until_str(&mut self.reader, needle, Some(self.max_capacity))
-            .map(|reader| reader.count())
-    }
-}
-
 impl<R: Read + ?Sized> Read for Reader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.buffer.pos() >= self.buffer.len() {
+        if self.buffer.pos() >= self.buffer.len() && buffer.len() >= self.buffer.cap() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
-            // We've consumed all the data we have
+            // Buffer is exhausted and the target is at least as large as the current capacity, so
+            // buffering would just add a copy without holding any leftover data.
 
-            // Clear all data in the internal buffer
+            // Clear the buffer to invalidate it's data before delegating to the inner reader
             self.buffer.clear();
 
             // Let the inner reader take things from here. Reading into the target buffer directly
@@ -215,7 +71,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         // Get a slice of data to put in the buffer
         let mut data = self.fill_buf()?;
 
-        // Read from the slice into the buffers
+        // Read from the slice into the buffer
         let bytes_read = data.read(buffer)?;
 
         // Consume the read bytes
@@ -230,12 +86,13 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 
         if self.buffer.pos() >= self.buffer.len() && total_length >= self.buffer.cap() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
-            // If the buffer is exhausted and the targets are larger, defer to the inner reader
+            // Buffer is exhausted and the target is at least as large as the current capacity, so
+            // buffering would just add a copy without holding any leftover data.
 
-            // Discard all data in the internal buffer
+            // Clear the buffer to invalidate it's data before delegating to the inner reader
             self.buffer.clear();
 
-            // Let the inner reader take things from here
+            // Let the inner reader take things from here. Reading into the target buffers directly
             return self.reader.read_vectored(buffers);
         }
 
@@ -274,9 +131,12 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         if buf.is_empty() {
+            // Optimized path for empty string.
+
             // Here be dragons, don't poke them!
             #[expect(unsafe_code, reason = "Exactly what BufReader does")]
             {
+                // RAII guard to ensure panic-safety and automatic rollback
                 struct Guard<'a> {
                     buf: &'a mut Vec<u8>,
                     len: usize,
@@ -284,20 +144,28 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 
                 impl Drop for Guard<'_> {
                     fn drop(&mut self) {
+                        // Truncates the string to rollback invalid UTF-8
                         unsafe {
                             self.buf.set_len(self.len);
                         }
                     }
                 }
 
+                // We take mutable ownership of the strings raw bytes with the guard as safety
                 let mut g = Guard {
                     len: buf.len(),
                     buf: unsafe { buf.as_mut_vec() },
                 };
+
+                // Read directly into the raw buffer
                 let ret = self.read_to_end(g.buf);
 
+                // read_to_end only appends so we can skip bounds checks
                 let appended = unsafe { g.buf.get_unchecked(g.len..) };
+
+                // validate the appended bytes as valid UTF-8
                 if str::from_utf8(appended).is_err() {
+                    // Validation failed, return an error. The guard will rollback the string
                     ret.and_then(|_| {
                         Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -305,11 +173,13 @@ impl<R: Read + ?Sized> Read for Reader<R> {
                         ))
                     })
                 } else {
+                    // Validation succeeded, update the string length
                     g.len = g.buf.len();
                     ret
                 }
             }
         } else {
+            // Fallback path with intermediate vector
             let mut bytes = Vec::new();
             self.read_to_end(&mut bytes)?;
             let string = str::from_utf8(&bytes).map_err(|_| {
@@ -331,17 +201,18 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             .buf()
             .get(self.buffer.pos()..(self.buffer.pos() + buf.len()))
         {
-            // If we have enough data in the buffer
+            // We have enough data in the internal buffer
 
-            // Copy the data to the buffer
+            // Copy the data to the target buffer
             buf.copy_from_slice(slice);
 
-            // Mark the data as consumed
+            // Mark the data as consumed in the internal buffer
             self.consume(buf.len());
 
             return Ok(());
         }
 
+        // We don't have enough data, so read repeatedly until we do
         let mut pos = 0;
         while pos < buf.len() {
             match self.read(buf[pos..].as_mut()) {
@@ -414,7 +285,9 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
     }
 
     fn fill(&mut self) -> io::Result<usize> {
-        self.buffer.fill(&mut self.reader).map(|r| r.count())
+        self.buffer
+            .fill(&mut self.reader)
+            .map(|reader| reader.count())
     }
 
     /// Reads from the underlying reader while `predicate` returns `true`.
@@ -434,6 +307,152 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
     }
 }
 
+impl<R: Read> Reader<R> {
+    /// Creates a new `Reader` with default configuration.
+    ///
+    /// The buffer starts at the default capacity and can grow up to [`DEFAULT_MAX_CAPACITY`].
+    pub fn new(reader: R) -> Reader<R> {
+        Reader::builder(reader).build()
+    }
+
+    /// Returns a [`ReaderBuilder`] for configuring a new `Reader`.
+    pub fn builder(reader: R) -> ReaderBuilder<R> {
+        ReaderBuilder {
+            reader,
+            initial_capacity: None,
+            max_capacity: None,
+        }
+    }
+}
+
+impl<R> Reader<R> {
+    pub fn into_parts(self) -> (R, Buffer) {
+        (self.reader, self.buffer)
+    }
+}
+
+impl<R: ?Sized> Reader<R> {
+    /// Returns a reference to the underlying reader.
+    pub fn get_ref(&self) -> &R {
+        &self.reader
+    }
+
+    /// Returns a mutable reference to the underlying reader.
+    ///
+    /// It is inadvisable to directly read from the underlying reader, as data that has already been
+    /// buffered will be lost.
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.reader
+    }
+
+    /// Returns the maximum buffer capacity configured for this reader.
+    pub fn max_capacity(&self) -> usize {
+        self.max_capacity
+    }
+
+    /// Returns up to `n` unconsumed bytes without advancing the read position.
+    ///
+    /// If fewer than `n` unconsumed bytes are available, the returned slice contains only what is
+    /// available. Returns an empty slice when there is no unconsumed data.
+    #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
+    pub fn peek(&self, n: usize) -> &[u8] {
+        let start = self.buffer.pos();
+        let end = self.buffer.len().min(start.saturating_add(n));
+        &self.buffer.buf()[start..end]
+    }
+
+    /// Returns up to `n` consumed bytes immediately before the read position.
+    ///
+    /// The standard [`Read`]/[`BufRead`]/[`Seek`] methods don't know retained consumed bytes exist,
+    /// so any of them that fetches from the inner reader, or seeks, may drop the retained prefix.
+    ///
+    /// If fewer than `n` consumed bytes are retained, the returned slice contains only what is
+    /// available. Returns an empty slice when no consumed data is retained.
+    #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
+    pub fn peek_behind(&self, n: usize) -> &[u8] {
+        let end = self.buffer.pos();
+        let start = end.saturating_sub(n);
+        &self.buffer.buf()[start..end]
+    }
+}
+
+impl<R: Read + ?Sized> Reader<R> {
+    /// Fills the buffer with at least `amt` bytes from the underlying reader, growing as needed.
+    ///
+    /// Returns the total number of bytes read. If the reader reaches EOF before `amt` bytes are
+    /// read, the partial count is returned (without error).
+    ///
+    /// Returns an error if the request would cause the buffer to exceed `max_capacity`.
+    pub fn fill_amount(&mut self, amt: usize) -> io::Result<usize> {
+        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested amount exceeds maximum buffer capacity",
+            ));
+        }
+
+        self.buffer
+            .fill_amount(&mut self.reader, amt)
+            .map(|reader| reader.count())
+    }
+
+    /// Fills the buffer with exactly `amt` bytes from the underlying reader, growing as needed.
+    ///
+    /// Returns an error if the reader reaches EOF before `amt` bytes are read
+    /// ([`UnexpectedEof`](io::ErrorKind::UnexpectedEof)), or if the request would cause the buffer
+    /// to exceed `max_capacity` ([`InvalidInput`](io::ErrorKind::InvalidInput)).
+    pub fn fill_exact(&mut self, amt: usize) -> io::Result<()> {
+        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested amount exceeds maximum buffer capacity",
+            ));
+        }
+
+        self.buffer.fill_exact(&mut self.reader, amt)
+    }
+
+    /// Reads from the underlying reader until EOF or `max_capacity` is reached.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_to_end(&mut self) -> io::Result<usize> {
+        // Can't use Buffer::fill_to_end since it doesn't take a growth limit.
+        self.fill_while_dyn(&mut |_| true)
+    }
+
+    /// Reads from the underlying reader until a byte delimiter is found, EOF, or `max_capacity`
+    /// is reached. Only newly-read data is scanned for `byte` each iteration.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_until(&mut self, byte: u8) -> io::Result<usize> {
+        self.buffer
+            .fill_until(&mut self.reader, byte, Some(self.max_capacity))
+            .map(|reader| reader.count())
+    }
+
+    /// Reads from the underlying reader until a character delimiter is found, EOF, or
+    /// `max_capacity` is reached. Multi-byte characters that span read boundaries are handled
+    /// correctly.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_until_char(&mut self, ch: char) -> io::Result<usize> {
+        self.buffer
+            .fill_until_char(&mut self.reader, ch, Some(self.max_capacity))
+            .map(|reader| reader.count())
+    }
+
+    /// Reads from the underlying reader until a string delimiter is found, EOF, or `max_capacity`
+    /// is reached. Matches that span read boundaries are handled correctly.
+    ///
+    /// Returns the total number of bytes read.
+    pub fn fill_until_str(&mut self, needle: &str) -> io::Result<usize> {
+        self.buffer
+            .fill_until_str(&mut self.reader, needle, Some(self.max_capacity))
+            .map(|reader| reader.count())
+    }
+}
+
+// TODO: Fully replace the Seek impl and concrete seek_relative
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "pos ≤ len by Buffer invariant"
@@ -502,3 +521,4 @@ impl<R: Read + Seek + ?Sized> Reader<R> {
 
 #[cfg(test)]
 mod tests;
+

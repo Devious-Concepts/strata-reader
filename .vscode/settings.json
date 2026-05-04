@@ -60,6 +60,7 @@
   "cSpell.ignoreWords": [
     "MSRV",
     "MSVC",
+    "RAII",
     "Swatinem",
     "VecDeque",
     "bufread",
