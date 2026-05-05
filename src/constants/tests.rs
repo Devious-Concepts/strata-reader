@@ -11,7 +11,7 @@ fn test_invariant() {
     // CHUNK_SIZE is a multiple of 1 KiB
     assert_eq!(CHUNK_SIZE % 1024, 0);
 
-    // CHUNK_SIZE is at least 8 KiB for optimal I/O performance
+    // CHUNK_SIZE is at least 8 KiB
     assert!(CHUNK_SIZE >= 8 * 1024);
 
     // CHUNK_SIZE is a power of two

@@ -7,8 +7,8 @@ Once set, that size never changes. `Reader` starts small and grows its buffer au
 data arrives, up to a configurable maximum. It also gives you explicit control over memory: you
 decide when to compact, shrink, or discard buffered data.
 
-This makes it a better fit for tokenizers, protocol parsers, and other use cases where input sizes
-are unpredictable and you want to manage buffer lifetime yourself.
+This is intended for tokenizers, protocol parsers, and other use cases where input sizes are
+unpredictable and you want to manage buffer lifetime yourself.
 
 ## Features
 

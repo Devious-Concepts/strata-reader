@@ -8,9 +8,9 @@
 //!
 //! # When to use this
 //!
-//! This crate is a good fit for tokenizers, protocol parsers, and other use cases where input sizes
-//! are unpredictable and you want to manage buffer lifetime yourself. If you know your input fits
-//! in a fixed buffer, prefer [`std::io::BufReader`].
+//! This crate is intended for tokenizers, protocol parsers, and other use cases where input sizes
+//! are unpredictable and you want to manage buffer lifetime yourself. For fixed-size buffering,
+//! [`std::io::BufReader`] is usually enough.
 //!
 //! # Quick start
 //!
