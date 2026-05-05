@@ -141,6 +141,13 @@ enum ReadOnce {
 ///
 /// This buffer maintains the invariant `0 <= self.pos <= self.len <= self.cap == self.buf.len() <=
 /// self.buf.capacity()` at all times, ensuring memory safety and correctness of all operations.
+///
+/// # Trait semantics
+///
+/// Cloning preserves the retained bytes and read position, but rebuilds storage with the smallest
+/// [`CHUNK_SIZE`]-aligned capacity that can hold the retained data.
+///
+/// Equality compares the retained bytes and read position. Buffer capacity is ignored.
 #[derive(Eq)]
 pub struct Buffer {
     /// Internal buffer storage.
