@@ -860,11 +860,8 @@ impl Buffer {
 
     /// Fills the buffer with exactly `amt` bytes from a reader, growing as needed.
     ///
-    /// Pre-allocates capacity to fit the requested amount, then reads exactly that many bytes using
-    /// [`Read::read_exact`].
-    ///
-    /// Unlike [`fill_amount`](Self::fill_amount), this method requires the full amount to be
-    /// available and returns an error if EOF is reached early.
+    /// Unlike [`fill_amount`](Self::fill_amount), this method requires the full amount to be read
+    /// and returns an error if EOF is reached early.
     ///
     /// # Examples
     ///
@@ -918,9 +915,8 @@ impl Buffer {
 
     /// Reads from a reader until EOF, growing the buffer as needed.
     ///
-    /// Repeatedly reads into available buffer space, growing as needed until the reader returns
-    /// `Ok(0)` (EOF). After the operation completes, any excess capacity is shrunk back toward the
-    /// starting capacity while still fitting the buffered data.
+    /// After the operation completes, any excess capacity is shrunk back toward the starting
+    /// capacity while still fitting the buffered data.
     ///
     /// This method does not impose a caller-visible growth limit of its own; it keeps reading and
     /// growing until EOF or an error occurs. In practice, available memory is the meaningful bound.

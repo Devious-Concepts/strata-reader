@@ -6,8 +6,8 @@ use std::io::{self, BufRead};
 /// grows automatically during reads as needed; shrinking is explicit.
 ///
 /// This trait is the retained-buffer surface. Its fill methods preserve retained consumed data
-/// while reading. Inherited [`std::io::BufRead`] and [`std::io::Read`] methods keep their standard
-/// trait contracts and may discard retained consumed data.
+/// while reading. Inherited [`std::io::BufRead`] and [`std::io::Read`] methods may discard retained
+/// consumed data when they need to synchronize with the underlying reader.
 ///
 /// Use [`buffer()`](Self::buffer), [`pos()`](Self::pos), and [`capacity()`](Self::capacity) to
 /// inspect the retained buffer. Use [`shrink()`](Self::shrink), [`compact()`](Self::compact),

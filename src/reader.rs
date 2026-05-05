@@ -47,6 +47,21 @@ impl<R: Read> ReaderBuilder<R> {
     }
 }
 
+/// A buffered reader with dynamically managed capacity and retained consumed data.
+///
+/// # Trait semantics
+///
+/// `Reader` can retain consumed bytes for inspection through methods like
+/// [`peek_behind`](Self::peek_behind). Methods inherited from [`Read`], [`BufRead`], and [`Seek`]
+/// are still allowed to invalidate retained data when they need to synchronize with the inner
+/// reader.
+///
+/// Use [`DynamicRead`] and the inherent methods on `Reader` when retained buffer contents
+/// matter across calls.
+///
+/// [`Seek::seek`] clears the buffer after a successful seek. [`Seek::stream_position`] reports the
+/// logical position without clearing it. For buffer-preserving relative movement, use
+/// [`Reader::seek_relative`].
 #[derive(Debug)]
 pub struct Reader<R: ?Sized> {
     buffer: Buffer,
@@ -255,6 +270,98 @@ impl<R: Read + ?Sized> BufRead for Reader<R> {
     }
 }
 
+impl<R: Seek + ?Sized> Seek for Reader<R> {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "pos ≤ len by Buffer invariant"
+    )]
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let result = if let SeekFrom::Current(offset) = pos {
+            let unconsumed =
+                i64::try_from(self.buffer.len() - self.buffer.pos()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "buffered data exceeds seek offset range",
+                    )
+                })?;
+
+            if let Some(inner_offset) = offset.checked_sub(unconsumed) {
+                self.reader.seek(SeekFrom::Current(inner_offset))?
+            } else {
+                // `offset - unconsumed` cannot fit in one `i64` seek. Rewind by the buffered
+                // tail first so the inner and logical positions match, then retry the caller's
+                // original offset without any buffer adjustment.
+                self.reader
+                    .seek(SeekFrom::Current(unconsumed.saturating_neg()))?;
+                self.buffer.clear();
+                return self.reader.seek(SeekFrom::Current(offset));
+            }
+        } else {
+            self.reader.seek(pos)?
+        };
+
+        self.buffer.clear();
+        Ok(result)
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "pos ≤ len by Buffer invariant"
+    )]
+    fn stream_position(&mut self) -> io::Result<u64> {
+        let unconsumed = u64::try_from(self.buffer.len() - self.buffer.pos()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "buffered data exceeds stream position range",
+            )
+        })?;
+
+        self.reader
+            .stream_position()?
+            .checked_sub(unconsumed)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "inner reader position is before unread buffered data",
+                )
+            })
+    }
+}
+
+impl<R: Seek + ?Sized> Reader<R> {
+    /// Seeks relative to the current logical position.
+    ///
+    /// If the target remains inside the retained buffer, either forward through unconsumed bytes
+    /// or backward through consumed lookbehind, only the buffer cursor moves and the inner reader
+    /// is left untouched.
+    ///
+    /// If the target is outside the retained window, this falls back to [`Seek::seek_relative`].
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "pos ≤ len by Buffer invariant"
+    )]
+    pub fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
+        let pos = self.buffer.pos();
+        let len = self.buffer.len();
+
+        if offset >= 0 {
+            if let Ok(forward) = usize::try_from(offset) {
+                if forward <= len - pos {
+                    self.buffer.consume(forward);
+                    return Ok(());
+                }
+            }
+        } else if let Ok(backward) = usize::try_from(offset.unsigned_abs()) {
+            if backward <= pos {
+                self.buffer.unconsume(backward);
+                return Ok(());
+            }
+        }
+
+        Seek::seek_relative(self, offset)
+    }
+}
+
 impl<R: Read + ?Sized> DynamicRead for Reader<R> {
     fn capacity(&self) -> usize {
         self.buffer.cap()
@@ -377,6 +484,21 @@ impl<R: ?Sized> Reader<R> {
 }
 
 impl<R: Read + ?Sized> Reader<R> {
+    /// Ensures a fill request cannot grow the buffer beyond `max_capacity`.
+    ///
+    /// `max_capacity` is normalized to a chunk boundary, so accepting only requests where
+    /// `buffer.len() + amt <= max_capacity` also keeps any chunk-rounded growth within the limit.
+    fn ensure_fill_within_max_capacity(&self, amt: usize) -> io::Result<()> {
+        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested amount exceeds maximum buffer capacity",
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Fills the buffer with at least `amt` bytes from the underlying reader, growing as needed.
     ///
     /// Returns the total number of bytes read. If the reader reaches EOF before `amt` bytes are
@@ -384,12 +506,7 @@ impl<R: Read + ?Sized> Reader<R> {
     ///
     /// Returns an error if the request would cause the buffer to exceed `max_capacity`.
     pub fn fill_amount(&mut self, amt: usize) -> io::Result<usize> {
-        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "requested amount exceeds maximum buffer capacity",
-            ));
-        }
+        self.ensure_fill_within_max_capacity(amt)?;
 
         self.buffer
             .fill_amount(&mut self.reader, amt)
@@ -402,12 +519,7 @@ impl<R: Read + ?Sized> Reader<R> {
     /// ([`UnexpectedEof`](io::ErrorKind::UnexpectedEof)), or if the request would cause the buffer
     /// to exceed `max_capacity` ([`InvalidInput`](io::ErrorKind::InvalidInput)).
     pub fn fill_exact(&mut self, amt: usize) -> io::Result<()> {
-        if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "requested amount exceeds maximum buffer capacity",
-            ));
-        }
+        self.ensure_fill_within_max_capacity(amt)?;
 
         self.buffer.fill_exact(&mut self.reader, amt)
     }
@@ -452,73 +564,5 @@ impl<R: Read + ?Sized> Reader<R> {
     }
 }
 
-// TODO: Fully replace the Seek impl and concrete seek_relative
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "pos ≤ len by Buffer invariant"
-)]
-#[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_wrap,
-    reason = "buffer size ≤ max_capacity ≪ i64::MAX"
-)]
-impl<R: Read + Seek + ?Sized> Seek for Reader<R> {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let result = match pos {
-            SeekFrom::Current(n) => {
-                let unconsumed = (self.buffer.len() - self.buffer.pos()) as i64;
-                let adjusted = n.checked_sub(unconsumed).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "seek offset overflow")
-                })?;
-                self.reader.seek(SeekFrom::Current(adjusted))?
-            }
-            _ => self.reader.seek(pos)?,
-        };
-        self.buffer.clear();
-        Ok(result)
-    }
-}
-
-impl<R: Read + Seek + ?Sized> Reader<R> {
-    /// Seeks relative to the current position, with an in-buffer fast path.
-    ///
-    /// If the target position falls within the currently buffered data, either
-    /// forward into unconsumed bytes or backward into retained consumed bytes,
-    /// the seek is performed without any I/O. Otherwise, the seek is delegated
-    /// to the underlying reader and the buffer is invalidated.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "pos ≤ len by Buffer invariant"
-    )]
-    #[expect(clippy::as_conversions, reason = "casts are lossless or range-checked")]
-    #[expect(clippy::cast_sign_loss, reason = "non-negative i64 fits in u64")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "values bounded by buffer positions, which fit in usize"
-    )]
-    pub fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
-        let pos = self.buffer.pos();
-        let len = self.buffer.len();
-
-        if offset >= 0 {
-            let offset_u64 = offset as u64;
-            if offset_u64 <= (len - pos) as u64 {
-                self.buffer.consume(offset_u64 as usize);
-                return Ok(());
-            }
-        } else {
-            let back_u64 = offset.unsigned_abs();
-            if back_u64 <= pos as u64 {
-                self.buffer.unconsume(back_u64 as usize);
-                return Ok(());
-            }
-        }
-
-        self.seek(SeekFrom::Current(offset))?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests;
-
