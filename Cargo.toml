@@ -7,6 +7,18 @@ rust-version = "1.87.0"
 description = "A BufReader with a dynamically growing buffer and manual memory control"
 keywords = ["io", "bufread", "buffer", "reader", "dynamic"]
 categories = ["data-structures", "parsing"]
+readme = "README.md"
+include = [
+  "src/buffer.rs",
+  "src/constants.rs",
+  "src/lib.rs",
+  "src/read.rs",
+  "src/reader.rs",
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "rust-toolchain.toml",
+]
 
 [lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
