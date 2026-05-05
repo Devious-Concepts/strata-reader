@@ -10,10 +10,10 @@
 /// Buffer capacity is always a multiple of this value, making it also the minimum possible size.
 pub const CHUNK_SIZE: usize = 1 << 13; // 2^13 = 8 KiB
 
-/// Default maximum buffer capacity (256 MiB) when no limit is specified.
+/// Default maximum buffer capacity (32 MiB) when no limit is specified.
 ///
-/// Provides a reasonable upper bound for most use cases while preventing runaway memory usage.
-pub const DEFAULT_MAX_CAPACITY: usize = CHUNK_SIZE * (1 << 15); // CHUNK_SIZE * 2^15 = 256 MiB
+/// Provides a generous fallback limit for automatic growth.
+pub const DEFAULT_MAX_CAPACITY: usize = CHUNK_SIZE * (1 << 12); // CHUNK_SIZE * 2^12 = 32 MiB
 
 /// Largest aligned capacity supported by the implementation.
 ///
