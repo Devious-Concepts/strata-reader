@@ -17,6 +17,9 @@ pub struct ReaderBuilder<R> {
 
 impl<R: Read> ReaderBuilder<R> {
     /// Sets the initial buffer capacity.
+    ///
+    /// The requested capacity is rounded up to the crate's chunk alignment when the reader is
+    /// built.
     #[inline]
     pub fn initial_capacity(mut self, cap: usize) -> Self {
         self.initial_capacity = Some(cap);
@@ -24,6 +27,10 @@ impl<R: Read> ReaderBuilder<R> {
     }
 
     /// Sets the maximum buffer capacity.
+    ///
+    /// The requested capacity is rounded up to the buffer's exponential growth alignment when the
+    /// reader is built. If the result is smaller than the initial capacity, it is raised to match
+    /// the initial capacity.
     #[inline]
     pub fn max_capacity(mut self, cap: usize) -> Self {
         self.max_capacity = Some(cap);
@@ -78,7 +85,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             /* Buffer is exhausted and the target is at least as large as the current capacity, so
             buffering would just add a copy without holding any leftover data. */
 
-            // Clear the buffer to invalidate it's data before delegating to the inner reader
+            // Clear the buffer to invalidate its data before delegating to the inner reader
             self.buffer.clear();
 
             // Let the inner reader take things from here. Reading into the target buffer directly
@@ -106,7 +113,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             /* Buffer is exhausted and the target is at least as large as the current capacity, so
             buffering would just add a copy without holding any leftover data. */
 
-            // Clear the buffer to invalidate it's data before delegating to the inner reader
+            // Clear the buffer to invalidate its data before delegating to the inner reader
             self.buffer.clear();
 
             // Let the inner reader take things from here. Reading into the target buffers directly
@@ -447,6 +454,11 @@ impl<R: Read> Reader<R> {
 }
 
 impl<R> Reader<R> {
+    /// Decomposes the reader into its inner reader and retained buffer.
+    ///
+    /// The returned [`Buffer`] preserves retained bytes and the current buffer position. Any
+    /// unconsumed bytes in that buffer have already been read from the inner reader, so callers
+    /// that continue using the inner reader directly must account for them.
     #[inline]
     pub fn into_parts(self) -> (R, Buffer) {
         (self.reader, self.buffer)
@@ -463,7 +475,7 @@ impl<R: ?Sized> Reader<R> {
     /// Returns a mutable reference to the underlying reader.
     ///
     /// It is inadvisable to directly read from the underlying reader, as data that has already been
-    /// buffered will be lost.
+    /// buffered will be bypassed by those direct reads.
     #[inline]
     pub fn get_mut(&mut self) -> &mut R {
         &mut self.reader
@@ -533,10 +545,11 @@ impl<R: Read + ?Sized> Reader<R> {
         Ok(())
     }
 
-    /// Fills the buffer with at least `amt` bytes from the underlying reader, growing as needed.
+    /// Fills the buffer with at least `amt` additional bytes from the underlying reader, growing as
+    /// needed.
     ///
-    /// Returns the total number of bytes read. If the reader reaches EOF before `amt` bytes are
-    /// read, the partial count is returned (without error).
+    /// Returns the total number of newly read bytes. If the reader reaches EOF before `amt` bytes
+    /// are read, the partial count is returned without error.
     ///
     /// Returns an error if the request would cause the buffer to exceed `max_capacity`.
     pub fn fill_amount(&mut self, amt: usize) -> io::Result<usize> {
@@ -547,7 +560,8 @@ impl<R: Read + ?Sized> Reader<R> {
             .map(|reader| reader.count())
     }
 
-    /// Fills the buffer with exactly `amt` bytes from the underlying reader, growing as needed.
+    /// Fills the buffer with exactly `amt` additional bytes from the underlying reader, growing as
+    /// needed.
     ///
     /// Returns an error if the reader reaches EOF before `amt` bytes are read
     /// ([`UnexpectedEof`](io::ErrorKind::UnexpectedEof)), or if the request would cause the buffer
@@ -567,7 +581,10 @@ impl<R: Read + ?Sized> Reader<R> {
     }
 
     /// Reads from the underlying reader until a byte delimiter is found, EOF, or `max_capacity`
-    /// is reached. Only newly-read data is scanned for `byte` each iteration.
+    /// is reached.
+    ///
+    /// Existing unconsumed data is checked first, and newly read data is appended to the retained
+    /// buffer. The delimiter remains in the buffer when found.
     ///
     /// Returns the total number of bytes read.
     pub fn fill_until(&mut self, byte: u8) -> io::Result<usize> {
@@ -577,8 +594,10 @@ impl<R: Read + ?Sized> Reader<R> {
     }
 
     /// Reads from the underlying reader until a character delimiter is found, EOF, or
-    /// `max_capacity` is reached. Multi-byte characters that span read boundaries are handled
-    /// correctly.
+    /// `max_capacity` is reached.
+    ///
+    /// Existing unconsumed data is checked first. Multi-byte characters that span read boundaries
+    /// are handled correctly, and the delimiter remains in the buffer when found.
     ///
     /// Returns the total number of bytes read.
     pub fn fill_until_char(&mut self, ch: char) -> io::Result<usize> {
@@ -588,7 +607,10 @@ impl<R: Read + ?Sized> Reader<R> {
     }
 
     /// Reads from the underlying reader until a string delimiter is found, EOF, or `max_capacity`
-    /// is reached. Matches that span read boundaries are handled correctly.
+    /// is reached.
+    ///
+    /// Existing unconsumed data is checked first. Matches that span read boundaries are handled
+    /// correctly, and the delimiter remains in the buffer when found.
     ///
     /// Returns the total number of bytes read.
     pub fn fill_until_str(&mut self, needle: &str) -> io::Result<usize> {

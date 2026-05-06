@@ -1,16 +1,16 @@
-//! A [`BufReader`](std::io::BufReader) alternative with a dynamically growing buffer and manual
+//! A [`BufReader`](std::io::BufReader)-style wrapper with a dynamically growing buffer and explicit
 //! memory control.
 //!
 //! [`BufReader`](std::io::BufReader) allocates a fixed buffer (8 KiB by default). Once set, that
 //! size never changes. [`Reader`] starts at the same 8 KiB and grows automatically as data
 //! arrives, up to a configurable maximum. It also gives you explicit control over memory: you
-//! decide when to compact the buffer, shrink it's capacity, or discard it.
+//! decide when to compact the buffer, shrink its capacity, or discard it.
 //!
 //! # When to use this
 //!
 //! This crate is intended for tokenizers, protocol parsers, and other use cases where input sizes
-//! are unpredictable and you want to manage buffer lifetime yourself. For fixed-size buffering,
-//! [`std::io::BufReader`] is usually enough.
+//! are unpredictable, lookbehind is useful, and you want to manage buffer lifetime yourself. For
+//! fixed-size buffering, [`std::io::BufReader`] is usually enough.
 //!
 //! # Quick start
 //!
@@ -22,14 +22,12 @@
 //! let data = b"key=value\nother=data\n";
 //! let mut reader = Reader::new(Cursor::new(data.as_slice()));
 //!
-//! // Read from the underlying reader until '=' is found in the buffer.
-//! // This is not an exact operation, the buffer may receive more data
-//! // than just "key=", depending on how much the underlying reader
-//! // provides in a single read.
+//! /* Read until '=' is present in the buffer. This is not an exact-length read: the buffer may
+//! receive more than "key=", depending on how much the underlying reader provides in one read. */
 //! reader.fill_until(b'=').unwrap();
 //!
-//! // In this case the entire input landed in the buffer at once, even
-//! // though we only asked to stop at '='.
+//! /* In this case the entire input landed in the buffer at once, even though we only asked to stop
+//! once '=' was found. */
 //! assert_eq!(reader.buffer(), b"key=value\nother=data\n");
 //!
 //! // Peek at just the key without consuming anything
@@ -38,8 +36,7 @@
 //! // Consume the key and the '=' delimiter (4 bytes: "key=")
 //! reader.consume(4);
 //!
-//! // The read position has advanced, but consumed data is still in
-//! // the buffer, peek_behind lets you look at it.
+//! // The read position has advanced, but consumed data is still retained
 //! assert_eq!(reader.peek_behind(4), b"key=");
 //!
 //! // The remaining unconsumed data is still available going forward

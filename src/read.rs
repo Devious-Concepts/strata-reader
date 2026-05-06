@@ -1,9 +1,9 @@
 use std::io::{self, BufRead};
 
-/// Extension of [`std::io::BufRead`] with dynamic buffer capacity management.
+/// Extension of [`std::io::BufRead`] with retained-buffer inspection and capacity management.
 ///
-/// Provides access to the retained buffer contents and methods to manage its memory. The buffer
-/// grows automatically during reads as needed; shrinking is explicit.
+/// Provides access to retained buffer contents and methods to manage their memory. Implementors may
+/// grow automatically during reads; shrinking is explicit.
 ///
 /// This trait is the retained-buffer surface. Its fill methods preserve retained consumed data
 /// while reading. Inherited [`std::io::BufRead`] and [`std::io::Read`] methods may discard retained
@@ -13,12 +13,12 @@ use std::io::{self, BufRead};
 /// inspect the retained buffer. Use [`shrink()`](Self::shrink), [`compact()`](Self::compact),
 /// [`clear()`](Self::clear), and [`discard()`](Self::discard) to manage it. Use
 /// [`fill()`](Self::fill) for a single read or [`fill_while_dyn()`](Self::fill_while_dyn) to read
-/// until a predicate is satisfied. Most callers should prefer
-/// [`DynamicReadExt::fill_while`].
+/// until a predicate is satisfied. [`DynamicReadExt::fill_while`] is the generic convenience wrapper
+/// around the object-safe [`fill_while_dyn()`](Self::fill_while_dyn) primitive.
 ///
 /// Implement `DynamicRead` directly; [`DynamicReadExt`] is blanket-implemented.
 pub trait DynamicRead: BufRead {
-    /// Returns the data currently retained in the buffer.
+    /// Returns all data currently retained in the buffer.
     ///
     /// This may include consumed bytes; use [`pos()`](Self::pos) to find where the unconsumed
     /// portion begins.
@@ -30,7 +30,7 @@ pub trait DynamicRead: BufRead {
     /// Returns the current buffer capacity in bytes.
     fn capacity(&self) -> usize;
 
-    /// Shrinks the buffer capacity to fit the current data.
+    /// Shrinks the buffer capacity to fit the retained data.
     ///
     /// The resulting capacity is implementation-defined but sufficient to hold all retained data.
     fn shrink(&mut self);
@@ -52,8 +52,8 @@ pub trait DynamicRead: BufRead {
         self.shrink();
     }
 
-    /// Performs a single read, retrying if interrupted, from the underlying reader into available
-    /// buffer space.
+    /// Performs one read attempt, retrying if interrupted, from the underlying reader into
+    /// available buffer space.
     ///
     /// Returns the number of bytes read, or `0` if the buffer is full or no more data could be
     /// read.
