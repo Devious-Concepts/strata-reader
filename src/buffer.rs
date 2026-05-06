@@ -57,6 +57,7 @@ impl FillResult {
     /// assert_eq!(FillResult::Complete(42).count(), 42);
     /// assert_eq!(FillResult::Eof(10).count(), 10);
     /// ```
+    #[inline]
     pub const fn count(&self) -> usize {
         match self {
             Self::Complete(n) | Self::Eof(n) => *n,
@@ -96,6 +97,7 @@ impl UnboundedFillResult {
     /// assert_eq!(UnboundedFillResult::Eof(10).count(), 10);
     /// assert_eq!(UnboundedFillResult::Capped(100).count(), 100);
     /// ```
+    #[inline]
     pub const fn count(&self) -> usize {
         match self {
             Self::Complete(n) | Self::Eof(n) | Self::Capped(n) => *n,
@@ -104,6 +106,7 @@ impl UnboundedFillResult {
 }
 
 impl From<FillResult> for UnboundedFillResult {
+    #[inline]
     fn from(result: FillResult) -> Self {
         match result {
             FillResult::Complete(n) => UnboundedFillResult::Complete(n),
@@ -197,6 +200,7 @@ impl Debug for Buffer {
 }
 
 impl Default for Buffer {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -714,7 +718,7 @@ impl Buffer {
 
                 let next_exponential = Self::cap_up(self.cap + CHUNK_SIZE);
                 if next_exponential > limit {
-                    // Fail closed if a future caller stops normalizing `growth_limit`.
+                    // Fail closed if a future caller stops normalizing `growth_limit`
                     if Self::cap_up_linear(limit) > limit {
                         return Ok(ReadOnce::Capped);
                     }
@@ -1135,7 +1139,7 @@ impl Buffer {
     )]
     #[inline]
     pub fn align_pos_to_char(&self, offset: usize) -> usize {
-        // Clamp the requested offset to the readable range: self.pos <= offset <= self.len.
+        // Clamp the requested offset to the readable range: self.pos <= offset <= self.len
         let clamped = cmp::max(offset, self.pos).min(self.len);
 
         if clamped == self.len {
@@ -1146,14 +1150,14 @@ impl Buffer {
                 return self.len;
             }
 
-            // Find the start of the last byte sequence.
+            // Find the start of the last byte sequence
             let start = self.buf[self.pos..self.len]
                 .iter()
                 .rev()
                 .position(|&b| b & 0b1100_0000 != 0b1000_0000)
                 .map_or(self.pos, |i| self.len - 1 - i);
 
-            // Determine the expected sequence length from the leading byte.
+            // Determine the expected sequence length from the leading byte
             let leading = self.buf[start];
             let expected = if leading & 0b1000_0000 == 0 {
                 1
@@ -1164,14 +1168,14 @@ impl Buffer {
             } else if leading & 0b1111_1000 == 0b1111_0000 {
                 4
             } else {
-                // Invalid leading byte (bare continuation or 0xFF/0xFE), treat as single byte.
+                // Invalid leading byte (bare continuation or 0xFF/0xFE), treat as single byte
                 1
             };
 
             if start + expected <= self.len {
-                self.len // Trailing character is complete; self.len is a valid boundary.
+                self.len // Trailing character is complete; self.len is a valid boundary
             } else {
-                start // Incomplete trailing sequence; back up to its start.
+                start // Incomplete trailing sequence; back up to its start
             }
         } else {
             // Find the position of first byte that is not a UTF-8 continuation byte
@@ -1216,7 +1220,7 @@ impl Buffer {
     )]
     #[inline]
     pub fn align_pos_to_next_char(&self, offset: usize) -> usize {
-        // Clamp the requested offset to the readable range: self.pos <= offset <= self.len.
+        // Clamp the requested offset to the readable range: self.pos <= offset <= self.len
         let clamped = cmp::max(offset, self.pos).min(self.len);
 
         // Find the position of first byte that is not a UTF-8 continuation byte

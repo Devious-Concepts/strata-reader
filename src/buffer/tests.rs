@@ -97,17 +97,17 @@ fn test_buffer_clone() {
     buffer.inject_test_data(b"abcdef");
     buffer.pos = 2;
 
-    // Write distinct bytes into spare capacity beyond the logical `len`.
+    // Write distinct bytes into spare capacity beyond the logical `len`
     buffer.buf[buffer.len] = b'x';
     buffer.buf[buffer.cap - 1] = b'y';
 
-    // Clone preserves the logical contents and read position.
+    // Clone preserves the logical contents and read position
     let cloned = buffer.clone();
     assert_eq!(cloned, buffer);
     assert_eq!(cloned.buf(), b"abcdef");
     assert_eq!(cloned.pos(), 2);
 
-    // Clone rebuilds storage from initialized bytes only.
+    // Clone rebuilds storage from initialized bytes only
     assert_eq!(cloned.cap(), CHUNK_SIZE);
     assert!(cloned.buf[cloned.len..].iter().all(|&byte| byte == 0));
 }
@@ -120,20 +120,20 @@ fn test_buffer_partial_eq() {
     left.inject_test_data(b"abcdef");
     right.inject_test_data(b"abcdef");
 
-    // Keep the logical read position the same on both buffers.
+    // Keep the logical read position the same on both buffers
     left.pos = 2;
     right.pos = 2;
 
-    // Write different bytes into spare capacity beyond each buffer's logical `len`.
+    // Write different bytes into spare capacity beyond each buffer's logical `len`
     left.buf[left.len] = b'x';
     left.buf[left.cap - 1] = b'y';
     right.buf[right.len] = b'z';
     right.buf[right.cap - 1] = b'w';
 
-    // Equality ignores capacity and spare bytes.
+    // Equality ignores capacity and spare bytes
     assert_eq!(left, right);
 
-    // Equality still distinguishes different logical read positions.
+    // Equality still distinguishes different logical read positions
     right.pos = 3;
 
     assert_ne!(left, right);
@@ -145,14 +145,14 @@ fn test_buffer_debug() {
     buffer.inject_test_data(b"abcdef");
     buffer.pos = 2;
 
-    // Write a distinct byte into spare capacity to prove it is not printed.
+    // Write a distinct byte into spare capacity to prove it is not printed
     buffer.buf[buffer.len] = b'x';
 
     let debug = format!("{buffer:?}");
     let pretty = format!("{buffer:#?}");
 
-    // Only the logical cursors are exposed; the raw byte storage is omitted,
-    // marked as non-exhaustive with a trailing `..`.
+    /* Only the logical cursors are exposed; the raw byte storage is omitted,
+    marked as non-exhaustive with a trailing `..`. */
     assert_eq!(
         debug,
         format!("Buffer {{ pos: 2, len: 6, cap: {}, .. }}", 4 * CHUNK_SIZE)
@@ -163,7 +163,7 @@ fn test_buffer_debug() {
     assert!(pretty.contains(&format!("cap: {},", 4 * CHUNK_SIZE)));
     assert!(pretty.contains(".."));
 
-    // No raw buffer bytes leak into the output, regardless of format flavor.
+    // No raw buffer bytes leak into the output, regardless of format flavor
     assert!(!debug.contains("abcdef"));
     assert!(!pretty.contains("abcdef"));
 }
@@ -745,7 +745,7 @@ fn test_buffer_shrink_targeted() {
      * Allocation uses an "at least" strategy, so no stable upper bound is assumed.
      */
 
-    // We have just under `250 * CHUNK_SIZE` of data, so data length becomes the shrink target.
+    // We have just under `250 * CHUNK_SIZE` of data, so data length becomes the shrink target
     buffer.shrink_targeted(usize::MIN); // target gets rounded to `CHUNK_SIZE` here
     assert_eq!(buffer.cap(), 250 * CHUNK_SIZE);
     assert!(buffer.buf.capacity() >= 250 * CHUNK_SIZE); // Also double check the internals
@@ -835,7 +835,7 @@ fn test_buffer_fill() {
     let data = "Hello, World!";
     let rem = CHUNK_SIZE % data.len();
 
-    // `CHUNK_SIZE` must not divide `data.len()` evenly or this test won't work.
+    // `CHUNK_SIZE` must not divide `data.len()` evenly or this test won't work
     assert_ne!(rem, 0);
 
     // Let's start with an EOF test
@@ -1507,7 +1507,7 @@ fn test_buffer_align_pos_to_char() {
     // Discard everything for a clean slate
     buffer.discard();
 
-    // Full buffer (len == cap): must not panic.
+    // Full buffer (len == cap): must not panic
     buffer.inject_test_data(&[b'A'; CHUNK_SIZE]);
     assert_eq!(buffer.len(), buffer.cap());
     let aligned = buffer.align_pos_to_char(buffer.len());
@@ -1516,8 +1516,8 @@ fn test_buffer_align_pos_to_char() {
     // Discard everything for a clean slate
     buffer.discard();
 
-    // Complete trailing multi-byte char: 世 = [0xE4, 0xB8, 0x96].
-    // self.len is a valid boundary → returns self.len.
+    /* Complete trailing multi-byte char: 世 = [0xE4, 0xB8, 0x96].
+    self.len is a valid boundary → returns self.len. */
     buffer.inject_test_data(b"Hello\xE4\xB8\x96");
     let aligned = buffer.align_pos_to_char(buffer.len());
     assert_eq!(aligned, buffer.len());
@@ -1525,8 +1525,8 @@ fn test_buffer_align_pos_to_char() {
     // Discard everything for a clean slate
     buffer.discard();
 
-    // Incomplete trailing 3-byte sequence: first 2 bytes of 世.
-    // self.len is mid-character → returns start of the incomplete sequence.
+    /* Incomplete trailing 3-byte sequence: first 2 bytes of 世.
+    self.len is mid-character → returns start of the incomplete sequence. */
     buffer.inject_test_data(b"Hello\xE4\xB8");
     let aligned = buffer.align_pos_to_char(buffer.len());
     assert_eq!(aligned, 5); // start of the incomplete sequence
@@ -1534,7 +1534,7 @@ fn test_buffer_align_pos_to_char() {
     // Discard everything for a clean slate
     buffer.discard();
 
-    // Incomplete trailing 4-byte sequence: only the leading byte.
+    // Incomplete trailing 4-byte sequence: only the leading byte
     buffer.inject_test_data(b"Hello\xF0");
     let aligned = buffer.align_pos_to_char(buffer.len());
     assert_eq!(aligned, 5);
@@ -1542,7 +1542,7 @@ fn test_buffer_align_pos_to_char() {
     // Discard everything for a clean slate
     buffer.discard();
 
-    // Empty region (pos == len): returns self.len.
+    // Empty region (pos == len): returns self.len
     assert_eq!(buffer.pos(), buffer.len());
     let aligned = buffer.align_pos_to_char(buffer.len());
     assert_eq!(aligned, buffer.len());

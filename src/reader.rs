@@ -17,12 +17,14 @@ pub struct ReaderBuilder<R> {
 
 impl<R: Read> ReaderBuilder<R> {
     /// Sets the initial buffer capacity.
+    #[inline]
     pub fn initial_capacity(mut self, cap: usize) -> Self {
         self.initial_capacity = Some(cap);
         self
     }
 
     /// Sets the maximum buffer capacity.
+    #[inline]
     pub fn max_capacity(mut self, cap: usize) -> Self {
         self.max_capacity = Some(cap);
         self
@@ -73,8 +75,8 @@ impl<R: Read + ?Sized> Read for Reader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.buffer.pos() >= self.buffer.len() && buffer.len() >= self.buffer.cap() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
-            // Buffer is exhausted and the target is at least as large as the current capacity, so
-            // buffering would just add a copy without holding any leftover data.
+            /* Buffer is exhausted and the target is at least as large as the current capacity, so
+            buffering would just add a copy without holding any leftover data. */
 
             // Clear the buffer to invalidate it's data before delegating to the inner reader
             self.buffer.clear();
@@ -101,8 +103,8 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 
         if self.buffer.pos() >= self.buffer.len() && total_length >= self.buffer.cap() {
             debug_assert!(self.buffer.pos() == self.buffer.len());
-            // Buffer is exhausted and the target is at least as large as the current capacity, so
-            // buffering would just add a copy without holding any leftover data.
+            /* Buffer is exhausted and the target is at least as large as the current capacity, so
+            buffering would just add a copy without holding any leftover data. */
 
             // Clear the buffer to invalidate it's data before delegating to the inner reader
             self.buffer.clear();
@@ -146,7 +148,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         if buf.is_empty() {
-            // Optimized path for empty string.
+            // Optimized path for empty string
 
             // Here be dragons, don't poke them!
             #[expect(unsafe_code, reason = "Exactly what BufReader does")]
@@ -248,6 +250,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
 }
 
 impl<R: Read + ?Sized> BufRead for Reader<R> {
+    #[inline]
     #[expect(clippy::indexing_slicing, reason = "pos ≤ len by Buffer invariant")]
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if self.buffer.pos() >= self.buffer.len() {
@@ -265,6 +268,7 @@ impl<R: Read + ?Sized> BufRead for Reader<R> {
         Ok(&self.buffer.buf()[self.buffer.pos()..])
     }
 
+    #[inline]
     fn consume(&mut self, amt: usize) {
         self.buffer.consume(amt);
     }
@@ -288,9 +292,9 @@ impl<R: Seek + ?Sized> Seek for Reader<R> {
             if let Some(inner_offset) = offset.checked_sub(unconsumed) {
                 self.reader.seek(SeekFrom::Current(inner_offset))?
             } else {
-                // `offset - unconsumed` cannot fit in one `i64` seek. Rewind by the buffered
-                // tail first so the inner and logical positions match, then retry the caller's
-                // original offset without any buffer adjustment.
+                /* `offset - unconsumed` cannot fit in one `i64` seek. Rewind by the buffered
+                tail first so the inner and logical positions match, then retry the caller's
+                original offset without any buffer adjustment. */
                 self.reader
                     .seek(SeekFrom::Current(unconsumed.saturating_neg()))?;
                 self.buffer.clear();
@@ -363,34 +367,42 @@ impl<R: Seek + ?Sized> Reader<R> {
 }
 
 impl<R: Read + ?Sized> DynamicRead for Reader<R> {
+    #[inline]
     fn capacity(&self) -> usize {
         self.buffer.cap()
     }
 
+    #[inline]
     fn buffer(&self) -> &[u8] {
         self.buffer.buf()
     }
 
+    #[inline]
     fn pos(&self) -> usize {
         self.buffer.pos()
     }
 
+    #[inline]
     fn shrink(&mut self) {
         self.buffer.shrink();
     }
 
+    #[inline]
     fn compact(&mut self) {
         self.buffer.compact();
     }
 
+    #[inline]
     fn clear(&mut self) {
         self.buffer.clear();
     }
 
+    #[inline]
     fn discard(&mut self) {
         self.buffer.discard();
     }
 
+    #[inline]
     fn fill(&mut self) -> io::Result<usize> {
         self.buffer
             .fill(&mut self.reader)
@@ -418,11 +430,13 @@ impl<R: Read> Reader<R> {
     /// Creates a new `Reader` with default configuration.
     ///
     /// The buffer starts at the default capacity and can grow up to [`DEFAULT_MAX_CAPACITY`].
+    #[inline]
     pub fn new(reader: R) -> Reader<R> {
         Reader::builder(reader).build()
     }
 
     /// Returns a [`ReaderBuilder`] for configuring a new `Reader`.
+    #[inline]
     pub fn builder(reader: R) -> ReaderBuilder<R> {
         ReaderBuilder {
             reader,
@@ -433,6 +447,7 @@ impl<R: Read> Reader<R> {
 }
 
 impl<R> Reader<R> {
+    #[inline]
     pub fn into_parts(self) -> (R, Buffer) {
         (self.reader, self.buffer)
     }
@@ -440,6 +455,7 @@ impl<R> Reader<R> {
 
 impl<R: ?Sized> Reader<R> {
     /// Returns a reference to the underlying reader.
+    #[inline]
     pub fn get_ref(&self) -> &R {
         &self.reader
     }
@@ -448,6 +464,7 @@ impl<R: ?Sized> Reader<R> {
     ///
     /// It is inadvisable to directly read from the underlying reader, as data that has already been
     /// buffered will be lost.
+    #[inline]
     pub fn get_mut(&mut self) -> &mut R {
         &mut self.reader
     }
@@ -466,6 +483,7 @@ impl<R: ?Sized> Reader<R> {
     }
 
     /// Returns the maximum buffer capacity configured for this reader.
+    #[inline]
     pub fn max_capacity(&self) -> usize {
         self.max_capacity
     }
@@ -474,6 +492,7 @@ impl<R: ?Sized> Reader<R> {
     ///
     /// If fewer than `n` unconsumed bytes are available, the returned slice contains only what is
     /// available. Returns an empty slice when there is no unconsumed data.
+    #[inline]
     #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
     pub fn peek(&self, n: usize) -> &[u8] {
         let start = self.buffer.pos();
@@ -488,6 +507,7 @@ impl<R: ?Sized> Reader<R> {
     ///
     /// If fewer than `n` consumed bytes are retained, the returned slice contains only what is
     /// available. Returns an empty slice when no consumed data is retained.
+    #[inline]
     #[expect(clippy::indexing_slicing, reason = "Clamped to buffer bounds")]
     pub fn peek_behind(&self, n: usize) -> &[u8] {
         let end = self.buffer.pos();
@@ -501,6 +521,7 @@ impl<R: Read + ?Sized> Reader<R> {
     ///
     /// `max_capacity` is normalized to a chunk boundary, so accepting only requests where
     /// `buffer.len() + amt <= max_capacity` also keeps any chunk-rounded growth within the limit.
+    #[inline]
     fn ensure_fill_within_max_capacity(&self, amt: usize) -> io::Result<()> {
         if amt > self.max_capacity.saturating_sub(self.buffer.len()) {
             return Err(io::Error::new(
@@ -541,7 +562,7 @@ impl<R: Read + ?Sized> Reader<R> {
     ///
     /// Returns the total number of bytes read.
     pub fn fill_to_end(&mut self) -> io::Result<usize> {
-        // Can't use Buffer::fill_to_end since it doesn't take a growth limit.
+        // Can't use Buffer::fill_to_end since it doesn't take a growth limit
         self.fill_while_dyn(&mut |_| true)
     }
 

@@ -335,7 +335,7 @@ fn test_reader_bufread_fill_buf() {
     assert_eq!(reader.buffer.len(), 13); // data was buffered
     assert_eq!(reader.buffer.pos(), 0); // no bytes were consumed
 
-    // Consume some data.
+    // Consume some data
     reader.consume(7);
 
     // Read again
@@ -346,7 +346,7 @@ fn test_reader_bufread_fill_buf() {
     assert_eq!(reader.buffer.len(), 13); // no change yet
     assert_eq!(reader.buffer.pos(), 7); // bytes were consumed
 
-    // Consume the rest.
+    // Consume the rest
     reader.consume(data.len() - 7);
 
     // Check that the state matches expectations
@@ -531,7 +531,7 @@ fn test_reader_seek_stream_position() {
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(data.as_bytes()); // inject the above 13 bytes
 
-    // With unconsumed buffered data, the logical position excludes the unconsumed bytes.
+    // With unconsumed buffered data, the logical position excludes the unconsumed bytes
     let pos = reader.stream_position().unwrap();
 
     // Check that the state matches expectations
@@ -539,7 +539,7 @@ fn test_reader_seek_stream_position() {
     assert_eq!(reader.buffer.pos(), 0); // no bytes were consumed
     assert_eq!(reader.buffer.len(), 13); // stream_position preserves the buffer
 
-    // Consumed buffered data counts toward the logical position.
+    // Consumed buffered data counts toward the logical position
     reader.buffer.consume(5);
     let pos = reader.stream_position().unwrap();
 
@@ -548,7 +548,7 @@ fn test_reader_seek_stream_position() {
     assert_eq!(reader.buffer.pos(), 5); // consumed bytes were preserved
     assert_eq!(reader.buffer.len(), 13); // stream_position still preserves the buffer
 
-    // If all buffered data is consumed, the logical position matches the inner reader again.
+    // If all buffered data is consumed, the logical position matches the inner reader again
     reader.buffer.consume(8);
     let pos = reader.stream_position().unwrap();
 
@@ -563,7 +563,7 @@ fn test_reader_seek_stream_position() {
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(&data.as_bytes()[..5]); // inject more bytes than inner read
 
-    // If the inner reader is before the unconsumed buffer, the positions are out of sync.
+    // If the inner reader is before the unconsumed buffer, the positions are out of sync
     let err = reader.stream_position().unwrap_err();
 
     // Check that the state matches expectations
@@ -786,7 +786,7 @@ fn test_reader_get_mut() {
         inner_reader.set_position(7); // 5+2, this skips the comma and space
     }
 
-    // Read a bit more and well see we skipped a bit.
+    // Read a bit more and well see we skipped a bit
     reader.buffer.fill_exact(&mut reader.reader, 5).unwrap(); // World
 
     /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
@@ -951,12 +951,12 @@ fn test_reader_ensure_fill_within_max_capacity() {
     // Check that the state matches expectations
     assert_eq!(reader.max_capacity(), 4 * CHUNK_SIZE);
 
-    // An empty buffer may fill exactly to max_capacity.
+    // An empty buffer may fill exactly to max_capacity
     reader
         .ensure_fill_within_max_capacity(4 * CHUNK_SIZE)
         .unwrap();
 
-    // A request beyond max_capacity is rejected.
+    // A request beyond max_capacity is rejected
     let err = reader
         .ensure_fill_within_max_capacity(4 * CHUNK_SIZE + 1)
         .unwrap_err();
@@ -976,10 +976,10 @@ fn test_reader_ensure_fill_within_max_capacity() {
     // Check that the state matches expectations
     assert_eq!(reader.buffer.len(), CHUNK_SIZE + 123);
 
-    // A non-aligned buffer length may fill the exact remaining amount.
+    // A non-aligned buffer length may fill the exact remaining amount
     reader.ensure_fill_within_max_capacity(remaining).unwrap();
 
-    // Anything beyond the exact remaining amount is rejected.
+    // Anything beyond the exact remaining amount is rejected
     let err = reader
         .ensure_fill_within_max_capacity(remaining + 1)
         .unwrap_err();
