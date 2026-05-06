@@ -1,6 +1,7 @@
 //! Tests for the Reader
 
 #![expect(
+    clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::unwrap_used,
     reason = "Okay in tests"
@@ -10,6 +11,32 @@ use super::*;
 use crate::buffer::tests::InterruptOnceReader;
 use crate::constants::CHUNK_SIZE;
 use std::io::{self, Cursor, IoSliceMut, Read, Seek, SeekFrom};
+
+/// A reader that counts `Seek::seek` calls and optionally fails the Nth one.
+///
+/// `fail_on_nth` is 1-indexed: `Some(2)` makes the second seek call return
+/// `InvalidInput` without delegating to `inner`.
+struct SeekCountingReader<R> {
+    inner: R,
+    seek_count: usize,
+    fail_on_nth: Option<usize>,
+}
+
+impl<R: Read> Read for SeekCountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R: Seek> Seek for SeekCountingReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.seek_count += 1;
+        if Some(self.seek_count) == self.fail_on_nth {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek failed"));
+        }
+        self.inner.seek(pos)
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Reader - impl Read
@@ -369,13 +396,15 @@ fn test_reader_bufread_fill_buf() {
 
 #[test]
 fn test_reader_seek_seek() {
-    // Seeking from an absolute position clears retained buffered data.
+    // Create a reader against some data
     let data = "Hello, World!";
     let mut cur = Cursor::new(data);
     cur.set_position(13); // simulate having read all bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(data.as_bytes()); // inject the above 13 bytes
-    reader.buffer.consume(5);
+    reader.buffer.consume(5); // consume a bit
+
+    // Seeking from an absolute position clears retained buffered data
     let pos = reader.seek(SeekFrom::Start(1)).unwrap();
 
     // Check that the state matches expectations
@@ -384,12 +413,15 @@ fn test_reader_seek_seek() {
     assert_eq!(reader.buffer.pos(), 0); // seek clears the buffer
     assert_eq!(reader.buffer.len(), 0); // seek clears the buffer
 
-    // Seeking from the current logical position adjusts for unconsumed buffered data.
+    // Create a reader against some data
     let mut cur = Cursor::new(data);
     cur.set_position(13); // simulate having read all bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(data.as_bytes()); // inject the above 13 bytes
-    reader.buffer.consume(5);
+    reader.buffer.consume(5); // consume a bit
+
+    /* Seeking from the current logical position factors in unconsumed buffered data to calculate
+    the correct inner offset. */
     let pos = reader.seek(SeekFrom::Current(2)).unwrap();
 
     // Check that the state matches expectations
@@ -398,11 +430,13 @@ fn test_reader_seek_seek() {
     assert_eq!(reader.buffer.pos(), 0); // seek clears the buffer
     assert_eq!(reader.buffer.len(), 0); // seek clears the buffer
 
-    // A failed delegated seek preserves retained buffered data.
+    // Create a reader against some data
     let mut cur = Cursor::new(data);
     cur.set_position(5); // simulate having read the first 5 bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(&data.as_bytes()[..5]); // inject the above 5 bytes
+
+    // A failed delegated seek preserves retained buffered data
     let err = reader.seek(SeekFrom::Current(-1)).unwrap_err();
 
     // Check that the state matches expectations
@@ -411,52 +445,93 @@ fn test_reader_seek_seek() {
     assert_eq!(reader.buffer.len(), 5); // failed seek does not clear buffered data
     assert_eq!(reader.reader.position(), 5);
 
-    // If the adjusted current seek would underflow `i64`, seek in two steps instead.
+    // Create a seek-counting reader against a massive amount of data
     let mut cur = Cursor::new(Vec::<u8>::new());
     cur.set_position((1_u64 << 63) + 1); // high enough for both delegated seeks to succeed
-    let mut reader = Reader::new(cur);
+    let inner = SeekCountingReader {
+        inner: cur,
+        seek_count: 0,
+        fail_on_nth: None,
+    };
+    let mut reader = Reader::new(inner);
     reader.buffer.inject_test_data(b"x"); // one unconsumed byte triggers offset underflow
+
+    // If the adjusted current seek would underflow `i64`, it seeks in two steps
     let pos = reader.seek(SeekFrom::Current(i64::MIN)).unwrap();
 
     // Check that the state matches expectations
     assert_eq!(pos, 0); // logical position 2^63 + i64::MIN
-    assert_eq!(reader.reader.position(), 0);
-    assert_eq!(reader.buffer.pos(), 0); // overflow fallback clears the buffer
-    assert_eq!(reader.buffer.len(), 0); // overflow fallback clears the buffer
+    assert_eq!(reader.reader.inner.position(), 0);
+    assert_eq!(reader.reader.seek_count, 2); // underflow path issues two inner seeks
+    assert_eq!(reader.buffer.pos(), 0); // underflow fallback clears the buffer
+    assert_eq!(reader.buffer.len(), 0); // underflow fallback clears the buffer
 
-    // If the second step fails, the reader is left synchronized at the old logical position.
+    // Create a reader against a tiny amount of data
     let mut cur = Cursor::new(Vec::<u8>::new());
-    cur.set_position(1); // one byte ahead of the logical position
-    let mut reader = Reader::new(cur);
-    reader.buffer.inject_test_data(b"x"); // one unconsumed byte triggers offset underflow
+    cur.set_position(1);
+    let inner = SeekCountingReader {
+        inner: cur,
+        seek_count: 0,
+        fail_on_nth: Some(1), // fail the rewind-by-buffered-tail step
+    };
+    let mut reader = Reader::new(inner);
+    reader.buffer.inject_test_data(b"x");
+
+    // If the first step of the underflow path fails, the buffer is preserved
     let err = reader.seek(SeekFrom::Current(i64::MIN)).unwrap_err();
 
     // Check that the state matches expectations
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    assert_eq!(reader.reader.position(), 0); // synchronized before the failing second seek
+    assert_eq!(reader.reader.seek_count, 1); // bailed out after the first step
+    assert_eq!(reader.reader.inner.position(), 1); // inner reader was not moved
+    assert_eq!(reader.buffer.pos(), 0); // failed first step preserves buffered data
+    assert_eq!(reader.buffer.len(), 1); // failed first step preserves buffered data
+
+    // Create a reader against a tiny amount of data
+    let mut cur = Cursor::new(Vec::<u8>::new());
+    cur.set_position(1); // one byte ahead of the logical position
+    let inner = SeekCountingReader {
+        inner: cur,
+        seek_count: 0,
+        fail_on_nth: Some(2), // explicitly fail the second step of the underflow path
+    };
+    let mut reader = Reader::new(inner);
+    reader.buffer.inject_test_data(b"x"); // one unconsumed byte triggers offset underflow
+
+    /* If the second step fails, the reader is left at the old logical position with an empty
+    buffer. (fully synchronized) */
+    let err = reader.seek(SeekFrom::Current(i64::MIN)).unwrap_err();
+
+    // Check that the state matches expectations
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(reader.reader.seek_count, 2); // first step succeeded, second step failed
+    assert_eq!(reader.reader.inner.position(), 0); // synchronized before the failing second seek
     assert_eq!(reader.buffer.pos(), 0); // synchronized buffer was cleared
     assert_eq!(reader.buffer.len(), 0); // synchronized buffer was cleared
 }
 
 #[test]
 fn test_reader_seek_stream_position() {
+    // Create a reader against some data
     let data = "Hello, World!";
-
-    // Without buffered data, the logical position is the inner reader position.
     let mut cur = Cursor::new(data);
     cur.set_position(5);
     let mut reader = Reader::new(cur);
+
+    // Without buffered data, the logical position is the inner reader position
     let pos = reader.stream_position().unwrap();
 
     // Check that the state matches expectations
     assert_eq!(pos, 5);
     assert_eq!(reader.buffer.len(), 0); // no data was buffered
 
-    // With unconsumed buffered data, the logical position excludes the unconsumed bytes.
+    // Create a reader against some data
     let mut cur = Cursor::new(data);
     cur.set_position(13); // simulate having read all bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(data.as_bytes()); // inject the above 13 bytes
+
+    // With unconsumed buffered data, the logical position excludes the unconsumed bytes.
     let pos = reader.stream_position().unwrap();
 
     // Check that the state matches expectations
@@ -482,11 +557,13 @@ fn test_reader_seek_stream_position() {
     assert_eq!(reader.buffer.pos(), 13); // all bytes were consumed
     assert_eq!(reader.buffer.len(), 13); // consumed lookbehind is preserved
 
-    // If the inner reader is before the unconsumed buffer, the positions are out of sync.
+    // Create a reader against some data
     let mut cur = Cursor::new(data);
     cur.set_position(3); // simulate an impossible state for the injected buffer
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(&data.as_bytes()[..5]); // inject more bytes than inner read
+
+    // If the inner reader is before the unconsumed buffer, the positions are out of sync.
     let err = reader.stream_position().unwrap_err();
 
     // Check that the state matches expectations
@@ -497,38 +574,44 @@ fn test_reader_seek_stream_position() {
 
 #[test]
 fn test_reader_seek_relative() {
-    // Seeking forward inside unconsumed buffered data only moves the buffer position.
+    // Create a reader against some data
     let data = "Hello, World!";
     let mut cur = Cursor::new(data);
     cur.set_position(13); // simulate having read all bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(data.as_bytes()); // inject the above 13 bytes
+
+    // Seeking forward inside unconsumed buffered data only moves the buffer position
     reader.seek_relative(5).unwrap();
 
     // Check that the state matches expectations
     assert_eq!(reader.buffer.pos(), 5);
-    assert_eq!(reader.buffer.len(), 13); // concrete seek_relative preserves the buffer
-    assert_eq!(reader.reader.position(), 13); // concrete seek_relative does not touch the reader
+    assert_eq!(reader.buffer.len(), 13); // buffer preserved when seek is within bounds
+    assert_eq!(reader.reader.position(), 13); // reader isn't touched when seek is within bounds
 
-    // Seeking backward inside retained consumed data only moves the buffer position.
+    // Create a reader against some data
     let mut cur = Cursor::new(data);
     cur.set_position(13); // simulate having read all bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(data.as_bytes()); // inject the above 13 bytes
     reader.buffer.consume(7);
+
+    // Seeking backward inside retained consumed data only moves the buffer position
     reader.seek_relative(-5).unwrap();
 
     // Check that the state matches expectations
     assert_eq!(reader.buffer.pos(), 2);
-    assert_eq!(reader.buffer.len(), 13); // concrete seek_relative preserves the buffer
-    assert_eq!(reader.reader.position(), 13); // concrete seek_relative does not touch the reader
+    assert_eq!(reader.buffer.len(), 13); // buffer preserved when seek is within bounds
+    assert_eq!(reader.reader.position(), 13); // reader isn't touched when seek is within bounds
 
-    // Seeking forward outside unconsumed buffered data falls back to the Seek implementation.
+    // Create a reader against some data
     let mut cur = Cursor::new(data);
     cur.set_position(5); // simulate having read the first 5 bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(&data.as_bytes()[..5]); // inject the above 5 bytes
     reader.buffer.consume(3);
+
+    // Seeking forward outside unconsumed buffered data falls back to the Seek implementation
     reader.seek_relative(5).unwrap();
 
     // Check that the state matches expectations
@@ -536,12 +619,14 @@ fn test_reader_seek_relative() {
     assert_eq!(reader.buffer.pos(), 0); // fallback seek clears the buffer
     assert_eq!(reader.buffer.len(), 0); // fallback seek clears the buffer
 
-    // Seeking backward outside retained consumed data falls back to the Seek implementation.
+    // Create a reader against some data
     let mut cur = Cursor::new(data);
     cur.set_position(13); // simulate having read all bytes
     let mut reader = Reader::new(cur);
     reader.buffer.inject_test_data(&data.as_bytes()[7..]); // inject compacted retained data
     reader.buffer.consume(1);
+
+    // Seeking backward outside retained consumed data falls back to the Seek implementation
     reader.seek_relative(-2).unwrap();
 
     // Check that the state matches expectations
@@ -821,7 +906,7 @@ fn test_reader_peek_behind() {
 
 #[test]
 fn test_reader_ensure_fill_within_max_capacity() {
-    // An empty buffer may fill exactly to max_capacity.
+    // Create a reader with a set max capacity
     let cur = Cursor::<&str>::default();
     let reader = Reader::builder(cur)
         .max_capacity(4 * CHUNK_SIZE)
@@ -829,6 +914,8 @@ fn test_reader_ensure_fill_within_max_capacity() {
 
     // Check that the state matches expectations
     assert_eq!(reader.max_capacity(), 4 * CHUNK_SIZE);
+
+    // An empty buffer may fill exactly to max_capacity.
     reader
         .ensure_fill_within_max_capacity(4 * CHUNK_SIZE)
         .unwrap();
@@ -841,7 +928,7 @@ fn test_reader_ensure_fill_within_max_capacity() {
     // Check that the state matches expectations
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 
-    // A non-aligned buffer length may fill the exact remaining amount.
+    // Create a reader with a set initial and max capacity
     let cur = Cursor::<&str>::default();
     let mut reader = Reader::builder(cur)
         .initial_capacity(2 * CHUNK_SIZE)
@@ -852,9 +939,11 @@ fn test_reader_ensure_fill_within_max_capacity() {
 
     // Check that the state matches expectations
     assert_eq!(reader.buffer.len(), CHUNK_SIZE + 123);
+
+    // A non-aligned buffer length may fill the exact remaining amount.
     reader.ensure_fill_within_max_capacity(remaining).unwrap();
 
-    // One byte beyond the exact remaining amount is rejected.
+    // Anything beyond the exact remaining amount is rejected.
     let err = reader
         .ensure_fill_within_max_capacity(remaining + 1)
         .unwrap_err();
