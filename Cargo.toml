@@ -17,6 +17,7 @@ include = [
   "src/reader.rs",
   "Cargo.toml",
   "Cargo.lock",
+  "CHANGELOG.md",
   "LICENSE",
   "README.md",
   "rust-toolchain.toml",
