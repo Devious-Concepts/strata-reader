@@ -1,11 +1,11 @@
-# Reader
+# strata-reader
 
 A `BufReader`-style wrapper with a dynamically growing buffer and explicit memory control.
 
 `std::io::BufReader` allocates a fixed buffer (8 KiB by default, configurable via `with_capacity`).
-Once set, that size never changes. `Reader` starts small and grows its buffer automatically as
-data arrives, up to a configurable maximum. It also gives you explicit control over memory: you
-decide when to compact, shrink, or discard buffered data.
+Once set, that size never changes. The `Reader` from this crate starts small and grows its buffer
+automatically as data arrives, up to a configurable maximum. It also gives you explicit control
+over memory: you decide when to compact, shrink, or discard buffered data.
 
 This is intended for tokenizers, protocol parsers, and other use cases where input sizes are
 unpredictable, lookbehind is useful, and you want to manage buffer lifetime yourself.
@@ -82,3 +82,16 @@ capacity is smaller than the initial capacity, it is raised to match the initial
 
 The MSRV is **1.87.0**. CI runs the full quality gate on stable Rust and an MSRV compatibility
 check on Linux.
+
+## License
+
+Licensed under the [Mozilla Public License Version 2.0](LICENSE).
+
+MPL-2.0 is a file-level weak copyleft: modifications to MPL-licensed files must be released
+under the MPL, but the license does not extend to separate files that merely use this crate.
+
+For the avoidance of doubt regarding intent: normal Rust usage of this crate is not considered
+modification of the Covered Software. This includes linking, generic instantiation
+(monomorphization), inlining, and other artifacts produced by the Rust compiler from
+downstream code. Only changes to the source files in this repository trigger MPL-2.0's source
+disclosure obligations. This note describes intent only and does not modify the license text.

@@ -1,7 +1,7 @@
 //! Buffer with dynamic capacity management.
 //!
 //! The [`Buffer`] type provides standalone buffered I/O operations with both manual and automatic
-//! growth and shrinking of its capacity. It is used as the internal buffer for
+//! growth and shrinking of its capacity. It is used as the internal buffer for the
 //! [`Reader`](crate::Reader).
 //!
 //! # Example
@@ -130,7 +130,7 @@ enum ReadOnce {
 
 /// A dynamically sized buffer with chunked capacity management.
 ///
-/// Provides buffered I/O with automatic capacity growth. Used as the internal buffer for
+/// Provides buffered I/O with automatic capacity growth. Used as the internal buffer for the
 /// [`Reader`](crate::Reader).
 ///
 /// # Capacity Management

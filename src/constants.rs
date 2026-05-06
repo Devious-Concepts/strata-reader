@@ -4,8 +4,8 @@
 
 /// Buffer chunk size. (8 KiB)
 ///
-/// The size matches [`std::io::BufReader`]'s default buffer size. `Reader` uses the same
-/// baseline rather than choosing a separate default.
+/// The size matches [`std::io::BufReader`]'s default buffer size. The [`Reader`](crate::Reader)
+/// uses the same baseline rather than choosing a separate default.
 ///
 /// Buffer capacity is always a multiple of this value, making it also the minimum possible size.
 pub const CHUNK_SIZE: usize = 1 << 13; // 2^13 = 8 KiB

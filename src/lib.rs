@@ -2,7 +2,7 @@
 //! memory control.
 //!
 //! [`BufReader`](std::io::BufReader) allocates a fixed buffer (8 KiB by default). Once set, that
-//! size never changes. [`Reader`] starts at the same 8 KiB and grows automatically as data
+//! size never changes. The [`Reader`] starts at the same 8 KiB and grows automatically as data
 //! arrives, up to a configurable maximum. It also gives you explicit control over memory: you
 //! decide when to compact the buffer, shrink its capacity, or discard it.
 //!
@@ -60,10 +60,8 @@
 //!
 //! # Crate organization
 //!
-//! - [`Reader`]: the primary type, wrapping any [`Read`](std::io::Read) with a managed
-//!   buffer.
-//! - [`ReaderBuilder`]: configures initial and maximum capacity before constructing a
-//!   [`Reader`].
+//! - [`Reader`]: the primary type, wrapping any [`Read`](std::io::Read) with a managed buffer.
+//! - [`ReaderBuilder`]: configures initial and maximum capacity before constructing a [`Reader`].
 //! - [`DynamicRead`]: trait extending [`BufRead`](std::io::BufRead) with buffer inspection and
 //!   memory management methods.
 //! - [`buffer::Buffer`]: the standalone buffer for users who want direct control without wrapping a

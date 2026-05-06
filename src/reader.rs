@@ -10,7 +10,7 @@ use std::io::{self, BufRead, Read, Seek, SeekFrom};
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct ReaderBuilder<R> {
-    reader: R,
+    inner: R,
     initial_capacity: Option<usize>,
     max_capacity: Option<usize>,
 }
@@ -51,7 +51,7 @@ impl<R: Read> ReaderBuilder<R> {
         Reader {
             buffer,
             max_capacity,
-            reader: self.reader,
+            inner: self.inner,
         }
     }
 }
@@ -60,7 +60,7 @@ impl<R: Read> ReaderBuilder<R> {
 ///
 /// # Trait semantics
 ///
-/// `Reader` can retain consumed bytes for inspection through methods like
+/// A `Reader` can retain consumed bytes for inspection through methods like
 /// [`peek_behind`](Self::peek_behind). Methods inherited from [`Read`], [`BufRead`], and [`Seek`]
 /// are still allowed to invalidate retained data when they need to synchronize with the inner
 /// reader.
@@ -75,7 +75,7 @@ impl<R: Read> ReaderBuilder<R> {
 pub struct Reader<R: ?Sized> {
     buffer: Buffer,
     max_capacity: usize,
-    reader: R,
+    inner: R,
 }
 
 impl<R: Read + ?Sized> Read for Reader<R> {
@@ -89,7 +89,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             self.buffer.clear();
 
             // Let the inner reader take things from here. Reading into the target buffer directly
-            return self.reader.read(buffer);
+            return self.inner.read(buffer);
         }
 
         // Get a slice of data to put in the buffer
@@ -117,7 +117,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
             self.buffer.clear();
 
             // Let the inner reader take things from here. Reading into the target buffers directly
-            return self.reader.read_vectored(buffers);
+            return self.inner.read_vectored(buffers);
         }
 
         // Get a slice of data to put in the buffers
@@ -148,7 +148,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         self.buffer.clear();
 
         // Let the inner reader take things from here
-        let bytes_read = self.reader.read_to_end(buf)?;
+        let bytes_read = self.inner.read_to_end(buf)?;
 
         Ok(unconsumed_bytes + bytes_read)
     }
@@ -268,7 +268,7 @@ impl<R: Read + ?Sized> BufRead for Reader<R> {
             self.buffer.clear();
 
             // Fill the buffer again
-            let _ = self.buffer.fill(&mut self.reader)?;
+            let _ = self.buffer.fill(&mut self.inner)?;
         }
 
         // Return the unconsumed data we have
@@ -297,18 +297,18 @@ impl<R: Seek + ?Sized> Seek for Reader<R> {
                 })?;
 
             if let Some(inner_offset) = offset.checked_sub(unconsumed) {
-                self.reader.seek(SeekFrom::Current(inner_offset))?
+                self.inner.seek(SeekFrom::Current(inner_offset))?
             } else {
                 /* `offset - unconsumed` cannot fit in one `i64` seek. Rewind by the buffered
                 tail first so the inner and logical positions match, then retry the caller's
                 original offset without any buffer adjustment. */
-                self.reader
+                self.inner
                     .seek(SeekFrom::Current(unconsumed.saturating_neg()))?;
                 self.buffer.clear();
-                return self.reader.seek(SeekFrom::Current(offset));
+                return self.inner.seek(SeekFrom::Current(offset));
             }
         } else {
-            self.reader.seek(pos)?
+            self.inner.seek(pos)?
         };
 
         self.buffer.clear();
@@ -327,7 +327,7 @@ impl<R: Seek + ?Sized> Seek for Reader<R> {
             )
         })?;
 
-        self.reader
+        self.inner
             .stream_position()?
             .checked_sub(unconsumed)
             .ok_or_else(|| {
@@ -412,7 +412,7 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
     #[inline]
     fn fill(&mut self) -> io::Result<usize> {
         self.buffer
-            .fill(&mut self.reader)
+            .fill(&mut self.inner)
             .map(|reader| reader.count())
     }
 
@@ -428,7 +428,7 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
     ///   while the predicate was still unsatisfied.
     fn fill_while_dyn(&mut self, predicate: &mut dyn FnMut(&[u8]) -> bool) -> io::Result<usize> {
         self.buffer
-            .fill_while(&mut self.reader, predicate, Some(self.max_capacity))
+            .fill_while(&mut self.inner, predicate, Some(self.max_capacity))
             .map(|reader| reader.count())
     }
 }
@@ -438,15 +438,15 @@ impl<R: Read> Reader<R> {
     ///
     /// The buffer starts at the default capacity and can grow up to [`DEFAULT_MAX_CAPACITY`].
     #[inline]
-    pub fn new(reader: R) -> Reader<R> {
-        Reader::builder(reader).build()
+    pub fn new(inner: R) -> Reader<R> {
+        Reader::builder(inner).build()
     }
 
     /// Returns a [`ReaderBuilder`] for configuring a new `Reader`.
     #[inline]
-    pub fn builder(reader: R) -> ReaderBuilder<R> {
+    pub fn builder(inner: R) -> ReaderBuilder<R> {
         ReaderBuilder {
-            reader,
+            inner,
             initial_capacity: None,
             max_capacity: None,
         }
@@ -461,7 +461,7 @@ impl<R> Reader<R> {
     /// that continue using the inner reader directly must account for them.
     #[inline]
     pub fn into_parts(self) -> (R, Buffer) {
-        (self.reader, self.buffer)
+        (self.inner, self.buffer)
     }
 }
 
@@ -469,7 +469,7 @@ impl<R: ?Sized> Reader<R> {
     /// Returns a reference to the underlying reader.
     #[inline]
     pub fn get_ref(&self) -> &R {
-        &self.reader
+        &self.inner
     }
 
     /// Returns a mutable reference to the underlying reader.
@@ -478,7 +478,7 @@ impl<R: ?Sized> Reader<R> {
     /// buffered will be bypassed by those direct reads.
     #[inline]
     pub fn get_mut(&mut self) -> &mut R {
-        &mut self.reader
+        &mut self.inner
     }
 
     /// Replaces the internal buffer with a fresh default-capacity buffer and returns the old one.
@@ -556,7 +556,7 @@ impl<R: Read + ?Sized> Reader<R> {
         self.ensure_fill_within_max_capacity(amt)?;
 
         self.buffer
-            .fill_amount(&mut self.reader, amt)
+            .fill_amount(&mut self.inner, amt)
             .map(|reader| reader.count())
     }
 
@@ -569,7 +569,7 @@ impl<R: Read + ?Sized> Reader<R> {
     pub fn fill_exact(&mut self, amt: usize) -> io::Result<()> {
         self.ensure_fill_within_max_capacity(amt)?;
 
-        self.buffer.fill_exact(&mut self.reader, amt)
+        self.buffer.fill_exact(&mut self.inner, amt)
     }
 
     /// Reads from the underlying reader until EOF or `max_capacity` is reached.
@@ -589,7 +589,7 @@ impl<R: Read + ?Sized> Reader<R> {
     /// Returns the total number of bytes read.
     pub fn fill_until(&mut self, byte: u8) -> io::Result<usize> {
         self.buffer
-            .fill_until(&mut self.reader, byte, Some(self.max_capacity))
+            .fill_until(&mut self.inner, byte, Some(self.max_capacity))
             .map(|reader| reader.count())
     }
 
@@ -602,7 +602,7 @@ impl<R: Read + ?Sized> Reader<R> {
     /// Returns the total number of bytes read.
     pub fn fill_until_char(&mut self, ch: char) -> io::Result<usize> {
         self.buffer
-            .fill_until_char(&mut self.reader, ch, Some(self.max_capacity))
+            .fill_until_char(&mut self.inner, ch, Some(self.max_capacity))
             .map(|reader| reader.count())
     }
 
@@ -615,7 +615,7 @@ impl<R: Read + ?Sized> Reader<R> {
     /// Returns the total number of bytes read.
     pub fn fill_until_str(&mut self, needle: &str) -> io::Result<usize> {
         self.buffer
-            .fill_until_str(&mut self.reader, needle, Some(self.max_capacity))
+            .fill_until_str(&mut self.inner, needle, Some(self.max_capacity))
             .map(|reader| reader.count())
     }
 }

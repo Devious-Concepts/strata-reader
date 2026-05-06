@@ -409,7 +409,7 @@ fn test_reader_seek_seek() {
 
     // Check that the state matches expectations
     assert_eq!(pos, 1);
-    assert_eq!(reader.reader.position(), 1);
+    assert_eq!(reader.inner.position(), 1);
     assert_eq!(reader.buffer.pos(), 0); // seek clears the buffer
     assert_eq!(reader.buffer.len(), 0); // seek clears the buffer
 
@@ -426,7 +426,7 @@ fn test_reader_seek_seek() {
 
     // Check that the state matches expectations
     assert_eq!(pos, 7); // logical position 5 + 2
-    assert_eq!(reader.reader.position(), 7);
+    assert_eq!(reader.inner.position(), 7);
     assert_eq!(reader.buffer.pos(), 0); // seek clears the buffer
     assert_eq!(reader.buffer.len(), 0); // seek clears the buffer
 
@@ -443,7 +443,7 @@ fn test_reader_seek_seek() {
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     assert_eq!(reader.buffer.pos(), 0); // failed seek does not consume buffered data
     assert_eq!(reader.buffer.len(), 5); // failed seek does not clear buffered data
-    assert_eq!(reader.reader.position(), 5);
+    assert_eq!(reader.inner.position(), 5);
 
     // Create a seek-counting reader against a massive amount of data
     let mut cur = Cursor::new(Vec::<u8>::new());
@@ -461,8 +461,8 @@ fn test_reader_seek_seek() {
 
     // Check that the state matches expectations
     assert_eq!(pos, 0); // logical position 2^63 + i64::MIN
-    assert_eq!(reader.reader.inner.position(), 0);
-    assert_eq!(reader.reader.seek_count, 2); // underflow path issues two inner seeks
+    assert_eq!(reader.inner.inner.position(), 0);
+    assert_eq!(reader.inner.seek_count, 2); // underflow path issues two inner seeks
     assert_eq!(reader.buffer.pos(), 0); // underflow fallback clears the buffer
     assert_eq!(reader.buffer.len(), 0); // underflow fallback clears the buffer
 
@@ -482,8 +482,8 @@ fn test_reader_seek_seek() {
 
     // Check that the state matches expectations
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    assert_eq!(reader.reader.seek_count, 1); // bailed out after the first step
-    assert_eq!(reader.reader.inner.position(), 1); // inner reader was not moved
+    assert_eq!(reader.inner.seek_count, 1); // bailed out after the first step
+    assert_eq!(reader.inner.inner.position(), 1); // inner reader was not moved
     assert_eq!(reader.buffer.pos(), 0); // failed first step preserves buffered data
     assert_eq!(reader.buffer.len(), 1); // failed first step preserves buffered data
 
@@ -504,8 +504,8 @@ fn test_reader_seek_seek() {
 
     // Check that the state matches expectations
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    assert_eq!(reader.reader.seek_count, 2); // first step succeeded, second step failed
-    assert_eq!(reader.reader.inner.position(), 0); // synchronized before the failing second seek
+    assert_eq!(reader.inner.seek_count, 2); // first step succeeded, second step failed
+    assert_eq!(reader.inner.inner.position(), 0); // synchronized before the failing second seek
     assert_eq!(reader.buffer.pos(), 0); // synchronized buffer was cleared
     assert_eq!(reader.buffer.len(), 0); // synchronized buffer was cleared
 }
@@ -587,7 +587,7 @@ fn test_reader_seek_relative() {
     // Check that the state matches expectations
     assert_eq!(reader.buffer.pos(), 5);
     assert_eq!(reader.buffer.len(), 13); // buffer preserved when seek is within bounds
-    assert_eq!(reader.reader.position(), 13); // reader isn't touched when seek is within bounds
+    assert_eq!(reader.inner.position(), 13); // reader isn't touched when seek is within bounds
 
     // Create a reader against some data
     let mut cur = Cursor::new(data);
@@ -602,7 +602,7 @@ fn test_reader_seek_relative() {
     // Check that the state matches expectations
     assert_eq!(reader.buffer.pos(), 2);
     assert_eq!(reader.buffer.len(), 13); // buffer preserved when seek is within bounds
-    assert_eq!(reader.reader.position(), 13); // reader isn't touched when seek is within bounds
+    assert_eq!(reader.inner.position(), 13); // reader isn't touched when seek is within bounds
 
     // Create a reader against some data
     let mut cur = Cursor::new(data);
@@ -615,7 +615,7 @@ fn test_reader_seek_relative() {
     reader.seek_relative(5).unwrap();
 
     // Check that the state matches expectations
-    assert_eq!(reader.reader.position(), 8); // logical position 3 + 5
+    assert_eq!(reader.inner.position(), 8); // logical position 3 + 5
     assert_eq!(reader.buffer.pos(), 0); // fallback seek clears the buffer
     assert_eq!(reader.buffer.len(), 0); // fallback seek clears the buffer
 
@@ -630,7 +630,7 @@ fn test_reader_seek_relative() {
     reader.seek_relative(-2).unwrap();
 
     // Check that the state matches expectations
-    assert_eq!(reader.reader.position(), 6); // logical position 8 - 2
+    assert_eq!(reader.inner.position(), 6); // logical position 8 - 2
     assert_eq!(reader.buffer.pos(), 0); // fallback seek clears the buffer
     assert_eq!(reader.buffer.len(), 0); // fallback seek clears the buffer
 }
@@ -656,7 +656,7 @@ fn test_reader_new() {
     assert_eq!(reader.buffer, Buffer::default());
     assert_eq!(reader.buffer.cap(), CHUNK_SIZE);
     assert_eq!(reader.max_capacity, DEFAULT_MAX_CAPACITY);
-    assert_eq!(reader.reader, Cursor::default());
+    assert_eq!(reader.inner, Cursor::default());
 }
 
 #[test]
@@ -669,7 +669,7 @@ fn test_reader_builder() {
     assert_eq!(reader.buffer, Buffer::default());
     assert_eq!(reader.buffer.cap(), CHUNK_SIZE);
     assert_eq!(reader.max_capacity, DEFAULT_MAX_CAPACITY);
-    assert_eq!(reader.reader, Cursor::default());
+    assert_eq!(reader.inner, Cursor::default());
 
     // Create a reader with a custom initial_capacity
     let cur = Cursor::<&str>::default();
@@ -682,20 +682,18 @@ fn test_reader_builder() {
     assert_eq!(reader.buffer, Buffer::default());
     assert_eq!(reader.buffer.cap(), 3 * CHUNK_SIZE); // Rounds up linearly
     assert_eq!(reader.max_capacity, DEFAULT_MAX_CAPACITY);
-    assert_eq!(reader.reader, Cursor::default());
+    assert_eq!(reader.inner, Cursor::default());
 
     // Create a reader with a custom max_capacity
     let cur = Cursor::<&str>::default();
     let max_capacity = 4 * CHUNK_SIZE + 123;
-    let reader = Reader::builder(cur)
-        .max_capacity(max_capacity)
-        .build();
+    let reader = Reader::builder(cur).max_capacity(max_capacity).build();
 
     // Check that the state matches expectations
     assert_eq!(reader.buffer, Buffer::default());
     assert_eq!(reader.buffer.cap(), CHUNK_SIZE);
     assert_eq!(reader.max_capacity, 8 * CHUNK_SIZE); // Rounds up exponentially
-    assert_eq!(reader.reader, Cursor::default());
+    assert_eq!(reader.inner, Cursor::default());
 
     // Create a reader with a custom initial_capacity and max_capacity
     let cur = Cursor::<&str>::default();
@@ -708,7 +706,7 @@ fn test_reader_builder() {
     assert_eq!(reader.buffer, Buffer::default());
     assert_eq!(reader.buffer.cap(), 3 * CHUNK_SIZE); // Rounds up linearly
     assert_eq!(reader.max_capacity, 8 * CHUNK_SIZE); // Rounds up exponentially
-    assert_eq!(reader.reader, Cursor::default());
+    assert_eq!(reader.inner, Cursor::default());
 
     // Create a reader with a smaller max_capacity than initial_capacity
     let cur = Cursor::<&str>::default();
@@ -721,7 +719,7 @@ fn test_reader_builder() {
     assert_eq!(reader.buffer, Buffer::default());
     assert_eq!(reader.buffer.cap(), 3 * CHUNK_SIZE); // Rounds up linearly
     assert_eq!(reader.max_capacity, 3 * CHUNK_SIZE); // Raised to match initial
-    assert_eq!(reader.reader, Cursor::default());
+    assert_eq!(reader.inner, Cursor::default());
 }
 
 // -----------------------------------------------------------------------------
@@ -735,7 +733,7 @@ fn test_reader_into_parts() {
     let mut reader = Reader::new(cur);
 
     // Read a bit then get the inner parts
-    reader.buffer.fill_exact(&mut reader.reader, 5).unwrap();
+    reader.buffer.fill_exact(&mut reader.inner, 5).unwrap();
     /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
     tested. This maintains the narrative style of our test files by using a black box instead. */
     let (inner_reader, buffer) = reader.into_parts();
@@ -758,7 +756,7 @@ fn test_reader_get_ref() {
     let mut reader = Reader::new(cur);
 
     // Read a bit then get a reference to the inner reader
-    reader.buffer.fill_exact(&mut reader.reader, 5).unwrap();
+    reader.buffer.fill_exact(&mut reader.inner, 5).unwrap();
     /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
     tested. This maintains the narrative style of our test files by using a black box instead. */
     let inner_reader = reader.get_ref();
@@ -775,7 +773,7 @@ fn test_reader_get_mut() {
     let mut reader = Reader::new(cur);
 
     // Read a bit then get a mutable reference to the inner reader and move it a bit
-    reader.buffer.fill_exact(&mut reader.reader, 5).unwrap(); // Hello
+    reader.buffer.fill_exact(&mut reader.inner, 5).unwrap(); // Hello
 
     /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
     tested. This maintains the narrative style of our test files by using a black box instead. */
@@ -787,7 +785,7 @@ fn test_reader_get_mut() {
     }
 
     // Read a bit more and well see we skipped a bit
-    reader.buffer.fill_exact(&mut reader.reader, 5).unwrap(); // World
+    reader.buffer.fill_exact(&mut reader.inner, 5).unwrap(); // World
 
     /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
     tested. This maintains the narrative style of our test files by using a black box instead. */
@@ -814,7 +812,7 @@ fn test_reader_take_buffer() {
     let data = "Hello, World!";
     let cur = Cursor::new(data);
     let mut reader = Reader::new(cur);
-    reader.buffer.fill_exact(&mut reader.reader, 5).unwrap();
+    reader.buffer.fill_exact(&mut reader.inner, 5).unwrap();
     reader.buffer.consume(2);
     /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
     tested. This maintains the narrative style of our test files by using a black box instead. */
@@ -845,9 +843,7 @@ fn test_reader_max_capacity() {
 
     // Create a reader with a custom max capacity
     let cur = Cursor::new(data);
-    let reader = Reader::builder(cur)
-        .max_capacity(4 * CHUNK_SIZE)
-        .build();
+    let reader = Reader::builder(cur).max_capacity(4 * CHUNK_SIZE).build();
 
     // Check that the state matches expectations
     assert_eq!(reader.max_capacity(), 4 * CHUNK_SIZE);
@@ -944,9 +940,7 @@ fn test_reader_peek_behind() {
 fn test_reader_ensure_fill_within_max_capacity() {
     // Create a reader with a set max capacity
     let cur = Cursor::<&str>::default();
-    let reader = Reader::builder(cur)
-        .max_capacity(4 * CHUNK_SIZE)
-        .build();
+    let reader = Reader::builder(cur).max_capacity(4 * CHUNK_SIZE).build();
 
     // Check that the state matches expectations
     assert_eq!(reader.max_capacity(), 4 * CHUNK_SIZE);
@@ -993,9 +987,7 @@ fn test_reader_fill_amount() {
     // Create a reader against more than the max capacity data
     let data = "A".repeat(5 * CHUNK_SIZE);
     let cur = Cursor::new(&data);
-    let mut reader = Reader::builder(cur)
-        .max_capacity(4 * CHUNK_SIZE)
-        .build();
+    let mut reader = Reader::builder(cur).max_capacity(4 * CHUNK_SIZE).build();
 
     // Read a bit
     let len = reader.fill_amount(10).unwrap();
@@ -1011,9 +1003,7 @@ fn test_reader_fill_amount() {
 
     // Create a reader against more than the max capacity data
     let cur = Cursor::new(&data);
-    let mut reader = Reader::builder(cur)
-        .max_capacity(4 * CHUNK_SIZE)
-        .build();
+    let mut reader = Reader::builder(cur).max_capacity(4 * CHUNK_SIZE).build();
 
     // Read exactly the max capacity amount
     let len = reader.fill_amount(4 * CHUNK_SIZE).unwrap();
@@ -1027,9 +1017,7 @@ fn test_reader_fill_exact() {
     // Create a reader against more than the max capacity data
     let data = "A".repeat(5 * CHUNK_SIZE);
     let cur = Cursor::new(&data);
-    let mut reader = Reader::builder(cur)
-        .max_capacity(4 * CHUNK_SIZE)
-        .build();
+    let mut reader = Reader::builder(cur).max_capacity(4 * CHUNK_SIZE).build();
 
     // Read a bit
     reader.fill_exact(10).unwrap();
