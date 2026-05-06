@@ -452,6 +452,19 @@ impl<R: ?Sized> Reader<R> {
         &mut self.reader
     }
 
+    /// Replaces the internal buffer with a fresh default-capacity buffer and returns the old one.
+    ///
+    /// Useful when retained slices into the buffer must outlive the reader's continued use, for
+    /// example when handing parsed bytes to another component while the reader keeps reading.
+    /// The returned buffer can be parked alongside those slices and dropped once they are no
+    /// longer needed.
+    ///
+    /// The replacement starts at the default capacity; it will grow as subsequent reads require.
+    #[inline]
+    pub fn take_buffer(&mut self) -> Buffer {
+        std::mem::take(&mut self.buffer)
+    }
+
     /// Returns the maximum buffer capacity configured for this reader.
     pub fn max_capacity(&self) -> usize {
         self.max_capacity

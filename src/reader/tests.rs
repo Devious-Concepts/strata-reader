@@ -798,6 +798,42 @@ fn test_reader_get_mut() {
 }
 
 #[test]
+fn test_reader_take_buffer() {
+    // Create a reader against no data
+    let cur = Cursor::<&str>::default();
+    let mut reader = Reader::new(cur);
+
+    // Taking from a fresh reader yields a default buffer and leaves a default buffer behind
+    let taken = reader.take_buffer();
+
+    // Check that the state matches expectations
+    assert_eq!(taken, Buffer::default());
+    assert_eq!(reader.buffer, Buffer::default());
+
+    // Create a reader against some data
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.buffer.fill_exact(&mut reader.reader, 5).unwrap();
+    reader.buffer.consume(2);
+    /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
+    tested. This maintains the narrative style of our test files by using a black box instead. */
+
+    // Build the expected taken buffer
+    let mut expected_taken = Buffer::default();
+    expected_taken.inject_test_data(&data.as_bytes()[..5]);
+    expected_taken.consume(2);
+
+    // Take the buffer
+    let taken = reader.take_buffer();
+
+    // Check that the state matches expectations
+    assert_eq!(taken, expected_taken); // buffered data and cursor were preserved in the taken buffer
+    assert_eq!(reader.buffer, Buffer::default()); // reader holds a fresh default buffer
+    assert_eq!(reader.buffer.cap(), CHUNK_SIZE); // replacement starts at default capacity
+}
+
+#[test]
 fn test_reader_max_capacity() {
     // Create a default reader
     let data = "Hello, World!";
