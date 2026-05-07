@@ -80,8 +80,7 @@ capacity is smaller than the initial capacity, it is raised to match the initial
 
 ## Minimum Supported Rust Version
 
-The MSRV is **1.87.0**. CI runs the full quality gate on stable Rust and an MSRV compatibility
-check on Linux.
+The MSRV is **1.87.0**.
 
 ## License
 
