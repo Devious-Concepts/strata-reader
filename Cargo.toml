@@ -1,6 +1,6 @@
 [package]
 name = "strata-reader"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 repository = "https://codeberg.org/Devious-Concepts/strata-reader"
 rust-version = "1.87.0"
@@ -11,14 +11,20 @@ license = "MPL-2.0"
 readme = "README.md"
 include = [
   "src/buffer.rs",
+  "src/buffer/tests.rs",
   "src/constants.rs",
+  "src/constants/tests.rs",
   "src/lib.rs",
   "src/read.rs",
   "src/reader.rs",
+  "src/reader/tests.rs",
   "Cargo.toml",
   "Cargo.lock",
   "CHANGELOG.md",
+  "CONTRIBUTING.md",
   "LICENSE",
+  "LICENSE-CLARIFICATION.md",
+  "LICENSE-MIT-0",
   "README.md",
   "rust-toolchain.toml",
 ]

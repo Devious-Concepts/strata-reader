@@ -28,4 +28,5 @@ Single-crate library with four modules:
   `CHUNK_SIZE`; the internal max constants are technical ceilings, not public tuning knobs.
 
 Key design: `Buffer` does the heavy lifting; the `Reader` delegates to it while enforcing
-`max_capacity` and providing the trait impls. Tests live in sibling `tests.rs` files per module.
+`max_capacity` and providing the trait impls. Tests live in nested `tests.rs` submodules per
+module (`src/<module>/tests.rs`).

@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-07-28
+
+Documentation and licensing release; no code changes.
+
+### Added
+
+- `LICENSE-CLARIFICATION.md`, the maintainers' statement of intent on how
+  MPL-2.0 applies to normal Rust usage (linking, monomorphization, inlining,
+  macro expansion), private use, binary distribution, and generated code.
+- MIT-0 licensing for example material: documentation code examples,
+  `examples/`, `tests/`, and `benches/` may be copied freely under the new
+  `LICENSE-MIT-0`, in addition to MPL-2.0.
+- `CONTRIBUTING.md`, establishing an inbound=outbound contribution policy, a
+  dual-license grant for example material, and contributor endorsement of the
+  statement of intent.
+- A pull request template recording each contributor's agreement to the
+  contribution terms.
+
+### Changed
+
+- Rewrote the README license section to accurately describe MPL-2.0's
+  file-level weak copyleft and the notice-and-source obligations of binary
+  distribution.
+- The published crate package now includes the licensing documents and the
+  unit-test submodules, so the packaged source is complete and testable as
+  shipped.
+
 ## [0.1.0] - 2026-05-06
 
 Initial release of `strata-reader`, a `BufReader`-style wrapper with a
@@ -95,4 +122,5 @@ dynamically growing buffer and explicit memory control.
 - Mozilla Public License 2.0.
 - Minimum Supported Rust Version of **1.87.0** on Rust edition 2024.
 
+[0.1.1]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.1
 [0.1.0]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.0
