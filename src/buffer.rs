@@ -29,7 +29,8 @@
 use crate::constants::{CHUNK_SIZE, MAX_EXPONENTIAL_CAPACITY, MAX_SUPPORTED_CAPACITY};
 use std::cmp;
 use std::fmt::{self, Debug};
-use std::io::{self, Read};
+use std::io::{self, BorrowedBuf, Read};
+use std::mem::MaybeUninit;
 
 /// Result type for bounded fill operations.
 ///
@@ -142,8 +143,9 @@ enum ReadOnce {
 ///
 /// # Invariants
 ///
-/// This buffer maintains the invariant `0 <= self.pos <= self.len <= self.cap == self.buf.len() <=
-/// self.buf.capacity()` at all times, ensuring memory safety and correctness of all operations.
+/// This buffer maintains the invariants `0 <= self.pos <= self.len <= self.initialized <= self.cap
+/// == self.buf.len() <= self.buf.capacity()` and that `self.buf[..self.initialized]` is initialized
+/// at all times, ensuring memory safety and correctness of all operations.
 ///
 /// # Trait semantics
 ///
@@ -151,16 +153,19 @@ enum ReadOnce {
 /// [`CHUNK_SIZE`]-aligned capacity that can hold the retained data.
 ///
 /// Equality compares the retained bytes and read position. Buffer capacity is ignored.
-#[derive(Eq)]
 pub struct Buffer {
     /// Internal buffer storage.
-    buf: Vec<u8>,
+    buf: Vec<MaybeUninit<u8>>,
     /// Logical capacity of the buffer.
     ///
     /// May be slightly less than `buf.capacity()`.
     cap: usize,
     /// Number of bytes currently stored in the buffer.
     len: usize,
+    /// Length of the initialized prefix of `buf`.
+    ///
+    /// This may exceed `len` when a reader initializes more space than it fills.
+    initialized: usize,
     /// Number of bytes that have been consumed (read position).
     pos: usize,
 }
@@ -169,16 +174,12 @@ impl Clone for Buffer {
     #[inline]
     fn clone(&self) -> Self {
         let cap = Self::cap_up_linear(self.len);
-        let mut buf = Vec::with_capacity(cap);
-        buf.extend_from_slice(self.buf());
-        buf.resize(cap, 0);
+        let mut cloned = Self::with_capacity(cap);
+        cloned.write_at(0, self.buf());
+        cloned.len = self.len;
+        cloned.pos = self.pos;
 
-        Self {
-            buf,
-            cap,
-            len: self.len,
-            pos: self.pos,
-        }
+        cloned
     }
 }
 
@@ -188,6 +189,8 @@ impl PartialEq for Buffer {
         self.pos == other.pos && self.buf() == other.buf()
     }
 }
+
+impl Eq for Buffer {}
 
 impl Debug for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -207,6 +210,55 @@ impl Default for Buffer {
 }
 
 impl Buffer {
+    /// Allocates `cap` byte slots without initializing their contents.
+    #[expect(unsafe_code, reason = "MaybeUninit elements require no initialization")]
+    #[inline]
+    fn allocate(cap: usize) -> Vec<MaybeUninit<u8>> {
+        let mut buf = Vec::with_capacity(cap);
+
+        // SAFETY: every bit pattern, including uninitialized memory, is valid for MaybeUninit.
+        unsafe {
+            buf.set_len(cap);
+        }
+
+        buf
+    }
+
+    /// Extends the storage to `target` without initializing the added byte slots.
+    #[expect(unsafe_code, reason = "MaybeUninit elements require no initialization")]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Callers only request growth"
+    )]
+    #[inline]
+    fn grow_storage(&mut self, target: usize) {
+        let additional = target - self.buf.len();
+        self.buf.reserve(additional);
+
+        // SAFETY: every bit pattern, including uninitialized memory, is valid for MaybeUninit.
+        unsafe {
+            self.buf.set_len(target);
+        }
+    }
+
+    /// Writes initialized bytes inside or immediately after the known initialized prefix.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Callers provide in-bounds ranges"
+    )]
+    #[expect(clippy::indexing_slicing, reason = "Callers provide in-bounds ranges")]
+    #[inline]
+    fn write_at(&mut self, offset: usize, data: &[u8]) {
+        debug_assert!(offset <= self.initialized);
+        let end = offset + data.len();
+
+        for (slot, &byte) in self.buf[offset..end].iter_mut().zip(data) {
+            slot.write(byte);
+        }
+
+        self.initialized = self.initialized.max(end);
+    }
+
     /// Creates a new buffer with the default capacity.
     ///
     /// The buffer is initialized with a capacity of [`CHUNK_SIZE`].
@@ -221,9 +273,10 @@ impl Buffer {
     #[inline]
     pub fn new() -> Self {
         Self {
-            buf: vec![0; CHUNK_SIZE],
+            buf: Self::allocate(CHUNK_SIZE),
             cap: CHUNK_SIZE,
             len: 0,
+            initialized: 0,
             pos: 0,
         }
     }
@@ -253,9 +306,10 @@ impl Buffer {
         let cap = Self::cap_up_linear(capacity);
 
         Self {
-            buf: vec![0; cap],
+            buf: Self::allocate(cap),
             cap,
             len: 0,
+            initialized: 0,
             pos: 0,
         }
     }
@@ -278,10 +332,15 @@ impl Buffer {
     /// assert_eq!(slice.len(), 13); // Full data length
     /// // Access unconsumed data: &slice[buffer.pos()..]
     /// ```
+    #[expect(
+        unsafe_code,
+        reason = "The initialized-prefix invariant covers the returned range"
+    )]
     #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
     #[inline]
     pub fn buf(&self) -> &[u8] {
-        &self.buf[..self.len]
+        // SAFETY: `self.len <= self.initialized`, so every element in this prefix is initialized.
+        unsafe { self.buf[..self.len].assume_init_ref() }
     }
 
     /// Returns the current capacity of the buffer in bytes.
@@ -331,6 +390,9 @@ impl Buffer {
     pub fn clear(&mut self) {
         self.pos = 0;
         self.len = 0;
+        if self.initialized < self.cap {
+            self.initialized = 0;
+        }
     }
 
     /// Discards all data and excess capacity.
@@ -430,6 +492,9 @@ impl Buffer {
         self.buf.copy_within(self.pos..self.len, 0);
         self.len -= self.pos;
         self.pos = 0;
+        if self.initialized < self.cap {
+            self.initialized = self.len;
+        }
     }
 
     /// Rounds capacity down to the nearest [`CHUNK_SIZE`] multiple.
@@ -593,7 +658,7 @@ impl Buffer {
         let next = Self::cap_up(target);
 
         if next > self.cap {
-            self.buf.resize(next, 0);
+            self.grow_storage(next);
             self.cap = next;
         }
     }
@@ -622,7 +687,7 @@ impl Buffer {
         let next = Self::cap_up_linear(target);
 
         if next > self.cap {
-            self.buf.resize(next, 0);
+            self.grow_storage(next);
             self.cap = next;
         }
     }
@@ -686,6 +751,86 @@ impl Buffer {
         self.buf.truncate(next);
         self.buf.shrink_to(next);
         self.cap = next;
+        self.initialized = self.initialized.min(next);
+    }
+
+    /// Reads once into a uniformly initialized or uninitialized storage segment.
+    #[expect(
+        unsafe_code,
+        reason = "The initialized-prefix count satisfies BorrowedBuf::set_init"
+    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
+    #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
+    fn read_segment(
+        &mut self,
+        reader: &mut impl Read,
+        start: usize,
+        end: usize,
+    ) -> io::Result<usize> {
+        loop {
+            let was_fully_initialized = self.initialized >= end;
+            let mut buf = BorrowedBuf::from(&mut self.buf[start..end]);
+
+            if was_fully_initialized {
+                // SAFETY: the initialized-prefix invariant covers this entire segment.
+                unsafe {
+                    buf.set_init();
+                }
+            }
+
+            let result = reader.read_buf(buf.unfilled());
+            let bytes_read = buf.len();
+            let unfilled_is_initialized = buf.is_init();
+
+            match result {
+                Ok(()) => {
+                    let newly_initialized = if unfilled_is_initialized {
+                        end
+                    } else {
+                        start + bytes_read
+                    };
+                    self.initialized = self.initialized.max(newly_initialized);
+                    return Ok(bytes_read);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted && bytes_read == 0 => {
+                    if unfilled_is_initialized {
+                        self.initialized = self.initialized.max(end);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Reads exactly one uniformly initialized or uninitialized storage segment.
+    #[expect(
+        unsafe_code,
+        reason = "The initialized-prefix count satisfies BorrowedBuf::set_init"
+    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
+    #[expect(clippy::indexing_slicing, reason = "Safe by invariant")]
+    fn read_exact_segment(
+        &mut self,
+        reader: &mut impl Read,
+        start: usize,
+        end: usize,
+    ) -> io::Result<()> {
+        let was_fully_initialized = self.initialized >= end;
+        let mut buf = BorrowedBuf::from(&mut self.buf[start..end]);
+
+        if was_fully_initialized {
+            // SAFETY: the initialized-prefix invariant covers this entire segment.
+            unsafe {
+                buf.set_init();
+            }
+        }
+
+        let result = reader.read_buf_exact(buf.unfilled());
+        debug_assert!(result.is_err() || buf.len() == end - start);
+        result?;
+
+        self.initialized = self.initialized.max(end);
+        Ok(())
     }
 
     /// Grows (unless capped), reads once from `reader`, and updates bookkeeping.
@@ -697,11 +842,7 @@ impl Buffer {
     ///
     /// On success the read bytes are appended (`self.len` is advanced) and `*total_bytes_read` is
     /// incremented.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "Safe by invariant"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
     fn read_once(
         &mut self,
         reader: &mut impl Read,
@@ -709,7 +850,7 @@ impl Buffer {
         growth_limit: Option<usize>,
     ) -> io::Result<ReadOnce> {
         if self.len >= self.cap {
-            debug_assert!(self.len == self.cap);
+            debug_assert_eq!(self.len, self.cap);
 
             if let Some(limit) = growth_limit.map(Self::cap_up_linear) {
                 if self.cap >= limit {
@@ -732,14 +873,15 @@ impl Buffer {
             }
         }
 
-        // Fill all available space, retrying on interrupt
-        let bytes_read = loop {
-            match reader.read(&mut self.buf[self.len..self.cap]) {
-                Ok(n) => break n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
+        /* The current BorrowedBuf API can describe an entirely initialized or entirely
+        uninitialized destination, but not a partially initialized one. Stop at the initialized
+        prefix boundary so fallback readers never reinitialize retained spare capacity. */
+        let read_end = if self.initialized > self.len {
+            self.initialized
+        } else {
+            self.cap
         };
+        let bytes_read = self.read_segment(reader, self.len, read_end)?;
 
         if bytes_read == 0 {
             return Ok(ReadOnce::Eof);
@@ -753,8 +895,10 @@ impl Buffer {
 
     /// Performs a single read into the buffer's available space without growing.
     ///
-    /// Makes one read call (retrying on interrupts) to fill available space in the buffer up to
-    /// its current capacity. Does not loop to fill the buffer completely.
+    /// Makes one read call (retrying on interrupts) into the next uniformly initialized or
+    /// uninitialized part of the buffer's available space. After growth, a read may stop at the
+    /// boundary between retained initialized spare capacity and newly allocated uninitialized
+    /// capacity. Does not loop to fill the buffer completely.
     ///
     /// Returns a [`FillResult`] with the number of bytes read and context about how the operation
     /// completed:
@@ -884,11 +1028,7 @@ impl Buffer {
     ///
     /// Returns [`io::ErrorKind::UnexpectedEof`] if the reader cannot provide the full amount. On
     /// error, the buffer contents are unspecified (some bytes may have been read).
-    #[expect(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "Safe by invariant"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Safe by invariant")]
     pub fn fill_exact(&mut self, mut reader: impl Read, amt: usize) -> io::Result<()> {
         // Check if the requested amount exceeds what we can possibly accommodate
         if amt > MAX_SUPPORTED_CAPACITY - self.len {
@@ -904,15 +1044,18 @@ impl Buffer {
         // Grow to accommodate amt more bytes of data
         self.grow_targeted_linear(target);
 
-        // Get exact free slice
-        let unfilled = &mut self.buf[self.len..target];
-        debug_assert_eq!(unfilled.len(), amt);
-
-        // Read exactly the requested amount of bytes
-        reader.read_exact(unfilled)?;
+        /* Read the known-initialized and uninitialized portions separately because BorrowedBuf
+        cannot currently describe a partially initialized destination. */
+        let initialized_end = self.initialized.min(target);
+        if self.len < initialized_end {
+            self.read_exact_segment(&mut reader, self.len, initialized_end)?;
+        }
+        if initialized_end < target {
+            self.read_exact_segment(&mut reader, initialized_end, target)?;
+        }
 
         // Update the length
-        self.len += amt;
+        self.len = target;
 
         Ok(())
     }
@@ -1018,7 +1161,7 @@ impl Buffer {
 
         loop {
             // Check the predicate on current unconsumed data before reading more
-            if !predicate(&self.buf[self.pos..self.len]) {
+            if !predicate(&self.buf()[self.pos..self.len]) {
                 break;
             }
 
@@ -1081,7 +1224,7 @@ impl Buffer {
 
         loop {
             // Check the unchecked portion for the delimiter before reading more
-            if self.buf[check_pos..self.len].contains(&byte) {
+            if self.buf()[check_pos..self.len].contains(&byte) {
                 break;
             }
 
@@ -1151,14 +1294,14 @@ impl Buffer {
             }
 
             // Find the start of the last byte sequence
-            let start = self.buf[self.pos..self.len]
+            let start = self.buf()[self.pos..self.len]
                 .iter()
                 .rev()
                 .position(|&b| b & 0b1100_0000 != 0b1000_0000)
                 .map_or(self.pos, |i| self.len - 1 - i);
 
             // Determine the expected sequence length from the leading byte
-            let leading = self.buf[start];
+            let leading = self.buf()[start];
             let expected = if leading & 0b1000_0000 == 0 {
                 1
             } else if leading & 0b1110_0000 == 0b1100_0000 {
@@ -1179,7 +1322,7 @@ impl Buffer {
             }
         } else {
             // Find the position of first byte that is not a UTF-8 continuation byte
-            self.buf[self.pos..=clamped]
+            self.buf()[self.pos..=clamped]
                 .iter()
                 .rev()
                 /* If the top two bits are 10 then it's a continuation byte,
@@ -1224,7 +1367,7 @@ impl Buffer {
         let clamped = cmp::max(offset, self.pos).min(self.len);
 
         // Find the position of first byte that is not a UTF-8 continuation byte
-        self.buf[clamped..self.len]
+        self.buf()[clamped..self.len]
             .iter()
             // If the top two bits are 10 then it's a continuation byte, this bitmask checks that
             .position(|&b| b & 0b1100_0000 != 0b1000_0000)
@@ -1290,7 +1433,7 @@ impl Buffer {
 
         let mut end = self.len;
         while end > start {
-            match str::from_utf8(&self.buf[start..end]) {
+            match str::from_utf8(&self.buf()[start..end]) {
                 Ok(s) => return Ok(s),
                 Err(e) => {
                     // If we have an invalid UTF-8 sequence in the middle

@@ -1,7 +1,7 @@
 use crate::buffer::Buffer;
 use crate::constants::DEFAULT_MAX_CAPACITY;
 use crate::read::DynamicRead;
-use std::io::{self, BufRead, Read, Seek, SeekFrom};
+use std::io::{self, BorrowedCursor, BufRead, Read, Seek, SeekFrom};
 
 /// A builder for constructing a [`Reader`] with custom capacity settings.
 ///
@@ -81,7 +81,7 @@ pub struct Reader<R: ?Sized> {
 impl<R: Read + ?Sized> Read for Reader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.buffer.pos() >= self.buffer.len() && buffer.len() >= self.buffer.cap() {
-            debug_assert!(self.buffer.pos() == self.buffer.len());
+            debug_assert_eq!(self.buffer.pos(), self.buffer.len());
             /* Buffer is exhausted and the target is at least as large as the current capacity, so
             buffering would just add a copy without holding any leftover data. */
 
@@ -104,12 +104,33 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         Ok(bytes_read)
     }
 
+    fn read_buf(&mut self, mut buffer: BorrowedCursor<'_, u8>) -> io::Result<()> {
+        if self.buffer.pos() >= self.buffer.len() && buffer.capacity() >= self.buffer.cap() {
+            debug_assert_eq!(self.buffer.pos(), self.buffer.len());
+            /* Buffer is exhausted and the target is at least as large as the current capacity, so
+            buffering would just add a copy without holding any leftover data. */
+
+            // Clear retained data before delegating directly to the inner reader
+            self.buffer.clear();
+            return self.inner.read_buf(buffer);
+        }
+
+        // Fill the internal buffer, then copy as much as the destination can hold
+        let data = self.fill_buf()?;
+        let bytes_read = data.len().min(buffer.capacity());
+        let (data, _) = data.split_at(bytes_read);
+        buffer.append(data);
+        self.consume(bytes_read);
+
+        Ok(())
+    }
+
     fn read_vectored(&mut self, buffers: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
         // Get the total length of all the buffers
         let total_length = buffers.iter().map(|b| b.len()).sum::<usize>();
 
         if self.buffer.pos() >= self.buffer.len() && total_length >= self.buffer.cap() {
-            debug_assert!(self.buffer.pos() == self.buffer.len());
+            debug_assert_eq!(self.buffer.pos(), self.buffer.len());
             /* Buffer is exhausted and the target is at least as large as the current capacity, so
             buffering would just add a copy without holding any leftover data. */
 
@@ -261,7 +282,7 @@ impl<R: Read + ?Sized> BufRead for Reader<R> {
     #[expect(clippy::indexing_slicing, reason = "pos ≤ len by Buffer invariant")]
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if self.buffer.pos() >= self.buffer.len() {
-            debug_assert!(self.buffer.pos() == self.buffer.len());
+            debug_assert_eq!(self.buffer.pos(), self.buffer.len());
             // We've consumed all the data we have
 
             // Clear the buffer
@@ -356,17 +377,17 @@ impl<R: Seek + ?Sized> Reader<R> {
         let len = self.buffer.len();
 
         if offset >= 0 {
-            if let Ok(forward) = usize::try_from(offset) {
-                if forward <= len - pos {
-                    self.buffer.consume(forward);
-                    return Ok(());
-                }
-            }
-        } else if let Ok(backward) = usize::try_from(offset.unsigned_abs()) {
-            if backward <= pos {
-                self.buffer.unconsume(backward);
+            if let Ok(forward) = usize::try_from(offset)
+                && forward <= len - pos
+            {
+                self.buffer.consume(forward);
                 return Ok(());
             }
+        } else if let Ok(backward) = usize::try_from(offset.unsigned_abs())
+            && backward <= pos
+        {
+            self.buffer.unconsume(backward);
+            return Ok(());
         }
 
         Seek::seek_relative(self, offset)

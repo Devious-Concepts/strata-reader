@@ -80,7 +80,8 @@ capacity is smaller than the initial capacity, it is raised to match the initial
 
 ## Minimum Supported Rust Version
 
-The MSRV is **1.87.0**.
+The released `main` branch has an MSRV of **1.87.0**. This experimental branch requires Nightly
+while [`Read::read_buf`](std::io::Read::read_buf) and its borrowed-buffer types remain unstable.
 
 ## License
 

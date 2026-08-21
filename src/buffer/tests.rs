@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::constants::{CHUNK_SIZE, MAX_EXPONENTIAL_CAPACITY, MAX_SUPPORTED_CAPACITY};
-use std::io::{self, Cursor, Read};
+use std::io::{self, BorrowedCursor, Cursor, Read};
 
 /// A reader that returns `Interrupted` once, then delegates to inner.
 pub(crate) struct InterruptOnceReader<R> {
@@ -26,6 +26,83 @@ impl<R: Read> Read for InterruptOnceReader<R> {
     }
 }
 
+/// A reader that uses the default `read_buf`, which initializes the whole destination first.
+struct DefaultRead<R> {
+    inner: R,
+}
+
+impl<R: Read> Read for DefaultRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+/// A reader that writes directly through `BorrowedCursor` and records its initialization state.
+pub(crate) struct DirectReadBuf<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) observed_init: Vec<bool>,
+}
+
+/// A fallback reader that records each initialized slice passed to `Read::read`.
+struct RecordingRead<'a> {
+    data: &'a [u8],
+    requested: Vec<usize>,
+}
+
+impl Read for RecordingRead<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.requested.push(buf.len());
+
+        let amt = self.data.len().min(buf.len());
+        let (read, remaining) = self.data.split_at(amt);
+        let (destination, _) = buf.split_at_mut(amt);
+        destination.copy_from_slice(read);
+        self.data = remaining;
+
+        Ok(amt)
+    }
+}
+
+/// A reader that appends data and returns an error from the same `read_buf` call.
+struct PartialErrorRead<'a> {
+    data: &'a [u8],
+    kind: io::ErrorKind,
+    calls: usize,
+}
+
+impl Read for PartialErrorRead<'_> {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        panic!("the partial-error read_buf implementation should be used")
+    }
+
+    fn read_buf(&mut self, mut buf: BorrowedCursor<'_, u8>) -> io::Result<()> {
+        self.calls = self.calls.saturating_add(1);
+
+        let amt = self.data.len().min(buf.capacity());
+        let (read, _) = self.data.split_at(amt);
+        buf.append(read);
+
+        Err(io::Error::new(self.kind, "partial read failure"))
+    }
+}
+
+impl Read for DirectReadBuf<'_> {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        panic!("the direct read_buf implementation should be used")
+    }
+
+    fn read_buf(&mut self, mut buf: BorrowedCursor<'_, u8>) -> io::Result<()> {
+        self.observed_init.push(buf.is_init());
+
+        let amt = self.data.len().min(buf.capacity());
+        let (read, remaining) = self.data.split_at(amt);
+        buf.append(read);
+        self.data = remaining;
+
+        Ok(())
+    }
+}
+
 impl Buffer {
     /// Test helper to append data directly into the buffer.
     ///
@@ -36,13 +113,9 @@ impl Buffer {
     /// # Panics
     ///
     /// Panics if the appended data would exceed the buffer's allocated capacity.
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::arithmetic_side_effects,
-        reason = "Used in tests only, so it being unsafe is fine"
-    )]
+    #[expect(clippy::arithmetic_side_effects, reason = "Used in tests only")]
     pub fn inject_test_data(&mut self, data: &[u8]) {
-        self.buf[self.len..self.len + data.len()].copy_from_slice(data);
+        self.write_at(self.len, data);
         self.len += data.len();
     }
 }
@@ -98,8 +171,8 @@ fn test_buffer_clone() {
     buffer.pos = 2;
 
     // Write distinct bytes into spare capacity beyond the logical `len`
-    buffer.buf[buffer.len] = b'x';
-    buffer.buf[buffer.cap - 1] = b'y';
+    buffer.buf[buffer.len].write(b'x');
+    buffer.buf[buffer.cap - 1].write(b'y');
 
     // Clone preserves the logical contents and read position
     let cloned = buffer.clone();
@@ -107,9 +180,9 @@ fn test_buffer_clone() {
     assert_eq!(cloned.buf(), b"abcdef");
     assert_eq!(cloned.pos(), 2);
 
-    // Clone rebuilds storage from initialized bytes only
+    // Clone rebuilds storage from logical contents only
     assert_eq!(cloned.cap(), CHUNK_SIZE);
-    assert!(cloned.buf[cloned.len..].iter().all(|&byte| byte == 0));
+    assert_eq!(cloned.initialized, cloned.len);
 }
 
 #[test]
@@ -125,10 +198,10 @@ fn test_buffer_partial_eq() {
     right.pos = 2;
 
     // Write different bytes into spare capacity beyond each buffer's logical `len`
-    left.buf[left.len] = b'x';
-    left.buf[left.cap - 1] = b'y';
-    right.buf[right.len] = b'z';
-    right.buf[right.cap - 1] = b'w';
+    left.buf[left.len].write(b'x');
+    left.buf[left.cap - 1].write(b'y');
+    right.buf[right.len].write(b'z');
+    right.buf[right.cap - 1].write(b'w');
 
     // Equality ignores capacity and spare bytes
     assert_eq!(left, right);
@@ -146,7 +219,7 @@ fn test_buffer_debug() {
     buffer.pos = 2;
 
     // Write a distinct byte into spare capacity to prove it is not printed
-    buffer.buf[buffer.len] = b'x';
+    buffer.buf[buffer.len].write(b'x');
 
     let debug = format!("{buffer:?}");
     let pretty = format!("{buffer:#?}");
@@ -819,6 +892,134 @@ fn test_buffer_read_once() {
     assert_eq!(result.unwrap(), ReadOnce::Read);
     assert_eq!(total, 6);
     assert_eq!(buffer.buf(), b"Hello!");
+}
+
+#[test]
+fn test_buffer_read_buf_initialization_tracking() {
+    let mut buffer = Buffer::new();
+    assert_eq!(buffer.initialized, 0);
+
+    // A direct implementation receives genuinely uninitialized capacity.
+    let mut direct = DirectReadBuf {
+        data: b"direct",
+        observed_init: Vec::new(),
+    };
+    assert_eq!(buffer.fill(&mut direct).unwrap(), FillResult::Complete(6));
+    assert_eq!(direct.observed_init, [false]);
+    assert_eq!(buffer.buf(), b"direct");
+    assert_eq!(buffer.initialized, buffer.len);
+
+    // Clearing direct-read data returns the buffer to a wholly uninitialized logical state.
+    buffer.clear();
+    assert_eq!(buffer.initialized, 0);
+
+    // The default Read::read_buf fallback initializes all spare capacity before calling read.
+    let mut default = DefaultRead {
+        inner: Cursor::new(b"fallback"),
+    };
+    assert_eq!(buffer.fill(&mut default).unwrap(), FillResult::Complete(8));
+    assert_eq!(buffer.buf(), b"fallback");
+    assert_eq!(buffer.initialized, buffer.cap);
+
+    // That initialization is retained across clear and reported to the next reader.
+    buffer.clear();
+    let mut direct = DirectReadBuf {
+        data: b"reused",
+        observed_init: Vec::new(),
+    };
+    assert_eq!(buffer.fill(&mut direct).unwrap(), FillResult::Complete(6));
+    assert_eq!(direct.observed_init, [true]);
+    assert_eq!(buffer.initialized, buffer.cap);
+
+    // Growth adds uninitialized storage while preserving the old initialized spare prefix.
+    let old_cap = buffer.cap;
+    buffer.grow();
+    assert_eq!(buffer.initialized, old_cap);
+    let mut direct = DirectReadBuf {
+        data: b"grown",
+        observed_init: Vec::new(),
+    };
+    assert_eq!(buffer.fill(&mut direct).unwrap(), FillResult::Complete(5));
+    assert_eq!(direct.observed_init, [true]);
+    assert_eq!(buffer.buf(), b"reusedgrown");
+    assert_eq!(buffer.initialized, old_cap);
+}
+
+#[test]
+fn test_buffer_growth_segments_fallback_initialization() {
+    let mut buffer = Buffer::new();
+    let prefix = vec![b'a'; 1024];
+
+    // The fallback initializes the original capacity while filling only the prefix.
+    let mut initial = DefaultRead {
+        inner: Cursor::new(&prefix),
+    };
+    assert_eq!(
+        buffer.fill(&mut initial).unwrap(),
+        FillResult::Complete(prefix.len())
+    );
+    let old_cap = buffer.cap;
+    assert_eq!(buffer.initialized, old_cap);
+
+    // Growth preserves that initialized boundary instead of forgetting the old spare region.
+    buffer.grow();
+    assert_eq!(buffer.initialized, old_cap);
+    assert_eq!(buffer.cap, 2 * old_cap);
+
+    let old_spare = old_cap - buffer.len;
+    let data = vec![b'b'; old_spare + 1];
+    let mut fallback = RecordingRead {
+        data: &data,
+        requested: Vec::new(),
+    };
+
+    assert_eq!(
+        buffer.fill_amount(&mut fallback, data.len()).unwrap(),
+        FillResult::Complete(data.len())
+    );
+
+    /* The first fallback call receives only the already-initialized old spare region. The second
+    receives only the newly allocated region, so it initializes exactly the growth amount rather
+    than the entire spare capacity. */
+    assert_eq!(fallback.requested, [old_spare, old_cap]);
+    assert_eq!(buffer.initialized, buffer.cap);
+    assert_eq!(&buffer.buf()[..prefix.len()], prefix);
+    assert_eq!(&buffer.buf()[prefix.len()..], data);
+}
+
+#[test]
+fn test_buffer_read_buf_partial_error_preserves_state() {
+    for kind in [io::ErrorKind::Other, io::ErrorKind::Interrupted] {
+        let mut buffer = Buffer::new();
+        buffer.inject_test_data(b"kept");
+        buffer.consume(2);
+
+        let original_len = buffer.len;
+        let original_pos = buffer.pos;
+        let original_initialized = buffer.initialized;
+        let mut reader = PartialErrorRead {
+            data: b"discarded",
+            kind,
+            calls: 0,
+        };
+
+        let error = buffer.fill(&mut reader).unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert_eq!(reader.calls, 1);
+        assert_eq!(buffer.buf(), b"kept");
+        assert_eq!(buffer.len, original_len);
+        assert_eq!(buffer.pos, original_pos);
+        assert_eq!(buffer.initialized, original_initialized);
+
+        // A later read safely overwrites the logically discarded partial bytes.
+        let mut recovery = DirectReadBuf {
+            data: b"next",
+            observed_init: Vec::new(),
+        };
+        assert_eq!(buffer.fill(&mut recovery).unwrap(), FillResult::Complete(4));
+        assert_eq!(recovery.observed_init, [false]);
+        assert_eq!(buffer.buf(), b"keptnext");
+    }
 }
 
 /* Coverage note: `read_once` Read, Eof, Capped, and growth paths are exercised

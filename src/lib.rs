@@ -1,3 +1,5 @@
+#![feature(borrowed_buf_init, core_io_borrowed_buf, read_buf)]
+
 //! A [`BufReader`](std::io::BufReader)-style wrapper with a dynamically growing buffer and explicit
 //! memory control.
 //!

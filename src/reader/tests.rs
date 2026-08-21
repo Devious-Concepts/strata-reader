@@ -8,9 +8,10 @@
 )]
 
 use super::*;
-use crate::buffer::tests::InterruptOnceReader;
+use crate::buffer::tests::{DirectReadBuf, InterruptOnceReader};
 use crate::constants::CHUNK_SIZE;
-use std::io::{self, Cursor, IoSliceMut, Read, Seek, SeekFrom};
+use std::io::{self, BorrowedBuf, Cursor, IoSliceMut, Read, Seek, SeekFrom};
+use std::mem::MaybeUninit;
 
 /// A reader that counts `Seek::seek` calls and optionally fails the Nth one.
 ///
@@ -131,6 +132,39 @@ fn test_reader_read_read() {
     assert_eq!(len, data.len());
     assert_eq!(&buf[..len], data.as_bytes());
     assert_eq!(reader.buffer.len(), 0); // buffer was skipped
+}
+
+#[test]
+fn test_reader_read_read_buf() {
+    let data = b"direct read_buf";
+    let inner = DirectReadBuf {
+        data,
+        observed_init: Vec::new(),
+    };
+    let mut reader = Reader::new(inner);
+    let mut storage = [MaybeUninit::<u8>::uninit(); CHUNK_SIZE];
+    let mut destination = BorrowedBuf::from(storage.as_mut_slice());
+
+    // A large destination bypasses the empty internal buffer without initializing it.
+    reader.read_buf(destination.unfilled()).unwrap();
+    assert_eq!(destination.filled(), data);
+    assert_eq!(reader.get_ref().observed_init, [false]);
+    assert!(reader.buffer.is_empty());
+
+    // Existing buffered data is copied directly into another uninitialized destination.
+    let inner = DirectReadBuf {
+        data: b"inner",
+        observed_init: Vec::new(),
+    };
+    let mut reader = Reader::new(inner);
+    reader.buffer.inject_test_data(b"buffered");
+    let mut storage = [MaybeUninit::<u8>::uninit(); 4];
+    let mut destination = BorrowedBuf::from(storage.as_mut_slice());
+
+    reader.read_buf(destination.unfilled()).unwrap();
+    assert_eq!(destination.filled(), b"buff");
+    assert_eq!(reader.get_ref().observed_init.as_slice(), &[]);
+    assert_eq!(reader.buffer.pos(), 4);
 }
 
 #[test]
