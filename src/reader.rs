@@ -494,6 +494,21 @@ impl<R: ?Sized> Reader<R> {
         std::mem::take(&mut self.buffer)
     }
 
+    /// Splits off the consumed portion of the internal buffer and returns it, retaining the
+    /// unconsumed portion.
+    ///
+    /// Like [`take_buffer`](Self::take_buffer), but only the consumed lookbehind leaves the
+    /// reader: the returned [`Buffer`] is shortened and shrunk to exactly the consumed bytes,
+    /// with its read position at the end. The unconsumed bytes stay in the reader at the start of
+    /// a fresh replacement buffer, so subsequent reads continue where they left off.
+    ///
+    /// The replacement starts at the smallest capacity that fits the unconsumed data; it will
+    /// grow as subsequent reads require.
+    #[inline]
+    pub fn take_consumed(&mut self) -> Buffer {
+        self.buffer.take_consumed()
+    }
+
     /// Returns the maximum buffer capacity configured for this reader.
     #[inline]
     pub fn max_capacity(&self) -> usize {

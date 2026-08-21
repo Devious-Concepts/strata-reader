@@ -432,6 +432,62 @@ impl Buffer {
         self.pos = 0;
     }
 
+    /// Splits off the consumed data into its own buffer, retaining the unconsumed data.
+    ///
+    /// The returned buffer holds exactly the consumed bytes, shortened and shrunk to the smallest
+    /// capacity that fits them, with its read position at the end (the bytes stay consumed). The
+    /// unconsumed bytes are kept at the start of a fresh replacement buffer with the read position
+    /// reset to 0.
+    ///
+    /// The existing allocation leaves with the returned buffer, so only the unconsumed bytes are
+    /// copied (into the replacement). When nothing is consumed, an empty default buffer is
+    /// returned and `self` is left untouched.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use strata_reader::buffer::Buffer;
+    /// # use std::io::Cursor;
+    /// let mut buffer = Buffer::new();
+    /// buffer.fill(Cursor::new(b"Hello, World!")).unwrap();
+    /// buffer.consume(7);  // Consume "Hello, "
+    ///
+    /// let consumed = buffer.take_consumed();
+    /// assert_eq!(consumed.buf(), b"Hello, ");
+    /// assert_eq!(consumed.pos(), consumed.len());  // Still marked consumed
+    ///
+    /// // The unconsumed remainder stays at the start of a fresh buffer
+    /// assert_eq!(buffer.buf(), b"World!");
+    /// assert_eq!(buffer.pos(), 0);
+    /// ```
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "Safe by invariant"
+    )]
+    #[must_use = "use `compact` to discard the consumed data instead"]
+    pub fn take_consumed(&mut self) -> Self {
+        if self.pos == 0 {
+            // Nothing is consumed, so hand out an empty buffer without any copying
+            return Self::new();
+        }
+
+        // Build the replacement with the unconsumed data at the start
+        let unconsumed = self.len - self.pos;
+        let mut replacement = Self::with_capacity(unconsumed);
+        replacement.buf[..unconsumed].copy_from_slice(&self.buf[self.pos..self.len]);
+        replacement.len = unconsumed;
+
+        // The existing allocation leaves with the consumed data
+        let mut taken = std::mem::replace(self, replacement);
+
+        // Shorten to the consumed data and release the excess capacity
+        taken.len = taken.pos;
+        taken.shrink();
+
+        taken
+    }
+
     /// Rounds capacity down to the nearest [`CHUNK_SIZE`] multiple.
     ///
     /// This method implements the linear shrinking strategy used by the buffer. It rounds down

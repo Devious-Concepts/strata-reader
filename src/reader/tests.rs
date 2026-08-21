@@ -832,6 +832,50 @@ fn test_reader_take_buffer() {
 }
 
 #[test]
+fn test_reader_take_consumed() {
+    // Create a reader against no data
+    let cur = Cursor::<&str>::default();
+    let mut reader = Reader::new(cur);
+
+    // Taking from a fresh reader yields an empty buffer and leaves the reader untouched
+    let taken = reader.take_consumed();
+
+    // Check that the state matches expectations
+    assert_eq!(taken, Buffer::default());
+    assert_eq!(reader.buffer, Buffer::default());
+
+    // Create a reader against some data
+    let data = "Hello, World!";
+    let cur = Cursor::new(data);
+    let mut reader = Reader::new(cur);
+    reader.buffer.fill_exact(&mut reader.inner, 5).unwrap(); // Hello
+    reader.buffer.consume(2);
+    /* We used Buffer::fill_exact here to avoid using Reader::fill_exact before it has been
+    tested. This maintains the narrative style of our test files by using a black box instead. */
+
+    // Build the expected taken buffer: the consumed prefix, still marked consumed
+    let mut expected_taken = Buffer::default();
+    expected_taken.inject_test_data(&data.as_bytes()[..2]); // He
+    expected_taken.consume(2);
+
+    // Build the expected retained buffer: the unconsumed remainder, rewound to the start
+    let mut expected_retained = Buffer::default();
+    expected_retained.inject_test_data(&data.as_bytes()[2..5]); // llo
+
+    // Take the consumed data
+    let taken = reader.take_consumed();
+
+    // Check that the state matches expectations
+    assert_eq!(taken, expected_taken); // only the consumed bytes left the reader
+    assert_eq!(reader.buffer, expected_retained); // unconsumed bytes stay in the reader
+
+    // Reading onwards should continue seamlessly from the retained data
+    let mut rest = String::new();
+    reader.read_to_string(&mut rest).unwrap();
+    assert_eq!(rest, "llo, World!");
+}
+
+#[test]
 fn test_reader_max_capacity() {
     // Create a default reader
     let data = "Hello, World!";

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Buffer::take_consumed` and `Reader::take_consumed`, splitting off the
+  consumed data as its own buffer, shortened and shrunk to the consumed size,
+  while the unconsumed data is retained at the start of a fresh replacement
+  buffer. Only the unconsumed bytes are copied; the existing allocation leaves
+  with the consumed data.
+
 ## [0.1.1] - 2026-07-28
 
 Documentation and licensing release; no code changes.

@@ -461,6 +461,67 @@ fn test_buffer_compact() {
     assert_eq!(buffer.pos(), 0);
 }
 
+#[test]
+fn test_buffer_take_consumed() {
+    let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE); // Power-of-2 multiple
+
+    // Taking from an empty buffer should yield an empty buffer and change nothing
+    let taken = buffer.take_consumed();
+
+    // The taken buffer should be empty and ours should keep its capacity
+    assert_eq!(taken, Buffer::default());
+    assert!(buffer.is_empty());
+    assert_eq!(buffer.pos(), 0);
+    assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
+
+    // Inject test data without consuming any of it
+    buffer.inject_test_data(b"Hello, World!");
+
+    // Taking with nothing consumed should still yield an empty buffer and change nothing
+    let taken = buffer.take_consumed();
+
+    // The taken buffer should be empty and ours should keep its data
+    assert_eq!(taken, Buffer::default());
+    assert_eq!(buffer.buf(), b"Hello, World!");
+    assert_eq!(buffer.pos(), 0);
+    assert_eq!(buffer.cap(), 8 * CHUNK_SIZE);
+
+    // Consume part of the data
+    buffer.consume(7); // Consume "Hello, "
+
+    // Taking should now split the buffer at the read position
+    let taken = buffer.take_consumed();
+
+    // The taken buffer should hold exactly the consumed data, still marked consumed
+    assert_eq!(taken.buf(), b"Hello, ");
+    assert_eq!(taken.len(), 7);
+    assert_eq!(taken.pos(), 7);
+    assert_eq!(taken.cap(), CHUNK_SIZE); // Shrunk to the smallest capacity that fits
+
+    // Ours should hold the unconsumed remainder at the start of a fresh buffer
+    assert_eq!(buffer.buf(), b"World!");
+    assert_eq!(buffer.len(), 6);
+    assert_eq!(buffer.pos(), 0);
+    assert_eq!(buffer.cap(), CHUNK_SIZE); // Replacement is sized to the unconsumed data
+
+    // Set up a split where both sides span multiple chunks
+    let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
+    let raw = "x".repeat(5 * CHUNK_SIZE);
+    buffer.inject_test_data(raw.as_bytes());
+    buffer.consume(2 * CHUNK_SIZE + 123);
+
+    // Taking should shorten the taken side and size the replacement to the remainder
+    let taken = buffer.take_consumed();
+
+    // Both sides should be rounded up to the next chunk multiple that fits their data
+    assert_eq!(taken.len(), 2 * CHUNK_SIZE + 123);
+    assert_eq!(taken.pos(), 2 * CHUNK_SIZE + 123);
+    assert_eq!(taken.cap(), 3 * CHUNK_SIZE);
+    assert_eq!(buffer.len(), 3 * CHUNK_SIZE - 123);
+    assert_eq!(buffer.pos(), 0);
+    assert_eq!(buffer.cap(), 3 * CHUNK_SIZE);
+}
+
 // -----------------------------------------------------------------------------
 // Buffer - Capacity rounding
 // -----------------------------------------------------------------------------
