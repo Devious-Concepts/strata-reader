@@ -435,9 +435,9 @@ impl Buffer {
     /// Splits off the consumed data into its own buffer, retaining the unconsumed data.
     ///
     /// The returned buffer holds exactly the consumed bytes, shortened and shrunk to the smallest
-    /// capacity that fits them, with its read position at the end (the bytes stay consumed). The
-    /// unconsumed bytes are kept at the start of a fresh replacement buffer with the read position
-    /// reset to 0.
+    /// capacity that fits them. Its read position sits at the end of that data (`pos() == len()`),
+    /// so every byte it holds is still marked consumed. The unconsumed bytes are kept at the start
+    /// of a fresh replacement buffer with the read position reset to 0.
     ///
     /// The existing allocation leaves with the returned buffer, so only the unconsumed bytes are
     /// copied (into the replacement). When nothing is consumed, an empty default buffer is
