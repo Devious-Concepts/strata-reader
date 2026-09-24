@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2] - 2026-09-24
 
 ### Added
 
@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumed data as its own buffer, shortened and shrunk to the consumed size,
   while the unconsumed data is retained at the start of a fresh replacement
   buffer. Only the unconsumed bytes are copied; the existing allocation leaves
-  with the consumed data.
+  with the consumed data. Both are `#[must_use]`, pointing at `compact` for
+  callers that only want to discard the consumed data.
 
 ## [0.1.1] - 2026-07-28
 
@@ -132,5 +133,6 @@ dynamically growing buffer and explicit memory control.
 - Mozilla Public License 2.0.
 - Minimum Supported Rust Version of **1.87.0** on Rust edition 2024.
 
+[0.1.2]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.2
 [0.1.1]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.1
 [0.1.0]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.0
