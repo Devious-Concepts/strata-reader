@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the consumed data. Both are `#[must_use]`, pointing at `compact` for
   callers that only want to discard the consumed data.
 
+### Changed
+
+- The pinned development toolchain in `rust-toolchain.toml` is now Rust
+  1.98.1. The Minimum Supported Rust Version is unchanged at 1.87.0.
+
 ## [0.1.1] - 2026-07-28
 
 Documentation and licensing release; no code changes.

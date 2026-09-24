@@ -81,7 +81,7 @@ pub struct Reader<R: ?Sized> {
 impl<R: Read + ?Sized> Read for Reader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.buffer.pos() >= self.buffer.len() && buffer.len() >= self.buffer.cap() {
-            debug_assert!(self.buffer.pos() == self.buffer.len());
+            debug_assert_eq!(self.buffer.pos(), self.buffer.len());
             /* Buffer is exhausted and the target is at least as large as the current capacity, so
             buffering would just add a copy without holding any leftover data. */
 
@@ -109,7 +109,7 @@ impl<R: Read + ?Sized> Read for Reader<R> {
         let total_length = buffers.iter().map(|b| b.len()).sum::<usize>();
 
         if self.buffer.pos() >= self.buffer.len() && total_length >= self.buffer.cap() {
-            debug_assert!(self.buffer.pos() == self.buffer.len());
+            debug_assert_eq!(self.buffer.pos(), self.buffer.len());
             /* Buffer is exhausted and the target is at least as large as the current capacity, so
             buffering would just add a copy without holding any leftover data. */
 
@@ -261,7 +261,7 @@ impl<R: Read + ?Sized> BufRead for Reader<R> {
     #[expect(clippy::indexing_slicing, reason = "pos ≤ len by Buffer invariant")]
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if self.buffer.pos() >= self.buffer.len() {
-            debug_assert!(self.buffer.pos() == self.buffer.len());
+            debug_assert_eq!(self.buffer.pos(), self.buffer.len());
             // We've consumed all the data we have
 
             // Clear the buffer

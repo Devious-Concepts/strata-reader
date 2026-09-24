@@ -765,7 +765,7 @@ impl Buffer {
         growth_limit: Option<usize>,
     ) -> io::Result<ReadOnce> {
         if self.len >= self.cap {
-            debug_assert!(self.len == self.cap);
+            debug_assert_eq!(self.len, self.cap);
 
             if let Some(limit) = growth_limit.map(Self::cap_up_linear) {
                 if self.cap >= limit {
