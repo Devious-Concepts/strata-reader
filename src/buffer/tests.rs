@@ -506,12 +506,17 @@ fn test_buffer_take_consumed() {
 
     // Set up a split where both sides span multiple chunks
     let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
-    let raw = "x".repeat(5 * CHUNK_SIZE);
-    buffer.inject_test_data(raw.as_bytes());
+    let raw = "Hello, World!".repeat(5 * CHUNK_SIZE / 13 + 1); // Long enough to slice down
+    let raw = &raw.as_bytes()[..5 * CHUNK_SIZE];
+    buffer.inject_test_data(raw);
     buffer.consume(2 * CHUNK_SIZE + 123);
 
     // Taking should shorten the taken side and size the replacement to the remainder
     let taken = buffer.take_consumed();
+
+    // Both sides should hold their exact bytes, split at the read position
+    assert_eq!(taken.buf(), &raw[..2 * CHUNK_SIZE + 123]);
+    assert_eq!(buffer.buf(), &raw[2 * CHUNK_SIZE + 123..]);
 
     // Both sides should be rounded up to the next chunk multiple that fits their data
     assert_eq!(taken.len(), 2 * CHUNK_SIZE + 123);
@@ -520,6 +525,36 @@ fn test_buffer_take_consumed() {
     assert_eq!(buffer.len(), 3 * CHUNK_SIZE - 123);
     assert_eq!(buffer.pos(), 0);
     assert_eq!(buffer.cap(), 3 * CHUNK_SIZE);
+
+    // Set up a split exactly on a chunk boundary
+    let mut buffer = Buffer::with_capacity(8 * CHUNK_SIZE);
+    buffer.inject_test_data(raw);
+    buffer.consume(2 * CHUNK_SIZE);
+
+    // Taking should not round either side past its exact chunk multiple
+    let taken = buffer.take_consumed();
+
+    // Both sides should hold their exact bytes at an exact chunk multiple
+    assert_eq!(taken.buf(), &raw[..2 * CHUNK_SIZE]);
+    assert_eq!(taken.pos(), 2 * CHUNK_SIZE);
+    assert_eq!(taken.cap(), 2 * CHUNK_SIZE);
+    assert_eq!(buffer.buf(), &raw[2 * CHUNK_SIZE..]);
+    assert_eq!(buffer.pos(), 0);
+    assert_eq!(buffer.cap(), 3 * CHUNK_SIZE);
+
+    // Consume everything that is left
+    buffer.consume(3 * CHUNK_SIZE);
+
+    // Taking should move all the data out and leave an empty default-sized buffer behind
+    let taken = buffer.take_consumed();
+
+    // The taken buffer should hold the remainder and ours should be fresh
+    assert_eq!(taken.buf(), &raw[2 * CHUNK_SIZE..]);
+    assert_eq!(taken.pos(), 3 * CHUNK_SIZE);
+    assert_eq!(taken.cap(), 3 * CHUNK_SIZE);
+    assert!(buffer.is_empty());
+    assert_eq!(buffer.pos(), 0);
+    assert_eq!(buffer.cap(), CHUNK_SIZE);
 }
 
 // -----------------------------------------------------------------------------

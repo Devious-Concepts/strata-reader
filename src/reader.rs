@@ -504,6 +504,7 @@ impl<R: ?Sized> Reader<R> {
     ///
     /// The replacement starts at the smallest capacity that fits the unconsumed data; it will
     /// grow as subsequent reads require.
+    #[must_use = "use `compact` to discard the consumed data instead"]
     #[inline]
     pub fn take_consumed(&mut self) -> Buffer {
         self.buffer.take_consumed()
