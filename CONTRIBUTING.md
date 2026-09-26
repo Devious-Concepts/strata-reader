@@ -36,7 +36,9 @@ description:
 
 ## Development
 
-- The MSRV is pinned in [`rust-toolchain.toml`](rust-toolchain.toml) and stated in the README.
+- The minimum supported Rust version is declared by `rust-version` in `Cargo.toml` and stated in
+  the README. [`rust-toolchain.toml`](rust-toolchain.toml) selects the development compiler,
+  which may be newer; it is not the MSRV.
 - The crate uses strict lints configured in `Cargo.toml`. Prefer
   `#[expect(lint, reason = "...")]` over `#[allow(lint)]`, and document safety around
   arithmetic, indexing, and unwrapping.
@@ -46,5 +48,5 @@ description:
 ## Provenance
 
 This document is maintained as part of the
-[strata-license](https://codeberg.org/Devious-Concepts/strata-license) template. The copy in
+[strata-template](https://codeberg.org/Devious-Concepts/strata-template) template. The copy in
 this repository is the version that applies to this project.
