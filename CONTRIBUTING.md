@@ -42,8 +42,19 @@ description:
 - The crate uses strict lints configured in `Cargo.toml`. Prefer
   `#[expect(lint, reason = "...")]` over `#[allow(lint)]`, and document safety around
   arithmetic, indexing, and unwrapping.
-- Unit tests live in nested `tests.rs` submodules per module (`src/<module>/tests.rs`); run
-  `cargo test` before submitting.
+- Unit tests live in nested `tests.rs` submodules per module (`src/<module>/tests.rs`).
+- Before submitting, run the fast checks with the development compiler:
+
+  ```bash
+  cargo fmt --check
+  cargo clippy --all-targets --all-features -- -D warnings
+  cargo test --all-targets --all-features
+  cargo test --doc --all-features
+  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+  ```
+
+  Releases also check the declared minimum compiler and the packaged source; that procedure is
+  in [RELEASING.md](RELEASING.md).
 
 ## Provenance
 
