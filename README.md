@@ -80,33 +80,6 @@ Initial capacity is rounded up to a multiple of `CHUNK_SIZE`; the maximum uses t
 exponential growth alignment. If the rounded maximum is smaller than the initial capacity,
 it is raised to match the initial capacity.
 
-## Retention and fill results
-
-Dynamic fills append to retained data, including bytes already consumed. Consume followed by
-`compact()` makes that space reusable; consuming alone does not. Standard `Read`/`BufRead`
-operations may discard consumed lookbehind when fetching more input, and successful seeks
-clear retained data.
-
-A delimiter fill returns the number of **new bytes read**, not the delimiter position. Inspect
-the unconsumed bytes to find the delimiter: a return of zero can also mean it was already
-present, the source returned EOF, or retained data filled the configured capacity. Filling can
-read ahead beyond the delimiter. Character and string searches interpret UTF-8 and may reject
-invalid data; byte searches work on arbitrary bytes.
-
-Multi-read fills may release excess capacity they added when they complete or reach EOF. They
-retain bytes read before an I/O error. `fill_exact()` is different: on error, do not rely on
-recovering partial new input from the buffer; the underlying source may already have advanced.
-`shrink()` and `discard()` let you release capacity explicitly, but capacity is not a measurement
-of total process memory.
-
-`take_consumed()` returns an owned buffer holding the consumed prefix. It allocates a replacement
-and copies the unread suffix into it; shrinking the returned buffer may also move its storage.
-Keep the returned buffer alive and borrow from it when needed. `take_buffer()` transfers all
-retained data, including read-ahead that must be handled before continuing with the source.
-
-The [consumer scenarios](tests/retained_stream.rs) exercise these contracts together; the
-[coverage notes](tests/README.md) map documentation claims to unit and integration tests.
-
 ## Minimum Supported Rust Version
 
 The MSRV is **1.87.0**.
