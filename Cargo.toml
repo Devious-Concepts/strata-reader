@@ -30,6 +30,13 @@ include = [
   "rust-toolchain.toml",
 ]
 
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "reader"
+harness = false
+
 [lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
 nonstandard_style = { level = "warn", priority = -1 }
@@ -63,10 +70,3 @@ print_stdout = "warn"
 todo = "warn"
 unimplemented = "warn"
 unwrap_used = "warn"
-
-[dev-dependencies]
-criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
-
-[[bench]]
-name = "reader"
-harness = false
