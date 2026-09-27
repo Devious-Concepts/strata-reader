@@ -10,7 +10,6 @@ categories = ["data-structures", "parsing"]
 license = "MPL-2.0"
 readme = "README.md"
 include = [
-  "tests/**",
   "src/buffer.rs",
   "src/buffer/tests.rs",
   "src/constants.rs",
@@ -27,6 +26,7 @@ include = [
   "LICENSE-CLARIFICATION.md",
   "LICENSE-MIT-0",
   "README.md",
+  "tests/**",
   "rust-toolchain.toml",
 ]
 

@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Buffer::take_consumed` and `Reader::take_consumed`, splitting off the
   consumed data as its own buffer, shortened and shrunk to the consumed size,
   while the unconsumed data is retained at the start of a fresh replacement
-  buffer. Only the unconsumed bytes are copied; the existing allocation leaves
-  with the consumed data. Both are `#[must_use]`, pointing at `compact` for
-  callers that only want to discard the consumed data.
+  buffer. The unconsumed bytes are copied into the replacement; shrinking the
+  returned buffer may also move its storage. Both are `#[must_use]`, pointing
+  at `compact` for callers that only want to discard the consumed data.
 
 ### Changed
 
@@ -58,15 +58,16 @@ dynamically growing buffer and explicit memory control.
 #### Core types
 
 - `Buffer`, a standalone growable byte buffer with chunk-aligned capacity
-  management. Capacity is always a multiple of `CHUNK_SIZE` (8 KiB) and grows
-  in power-of-two steps up to a configured ceiling.
+  management. Capacity is always a multiple of `CHUNK_SIZE` (8 KiB); growth
+  uses exponential or linear chunk alignment depending on the operation.
 - `Reader<R>`, a `BufReader`-style wrapper around any `Read` source that
   delegates storage to a `Buffer` and enforces a configurable maximum
   capacity.
 - `ReaderBuilder<R>`, returned from `Reader::builder`, for configuring
   `initial_capacity` and `max_capacity` before constructing a `Reader`. Both
-  settings round up to the chunk alignment, and `max_capacity` is raised to
-  match `initial_capacity` if the caller provides a smaller ceiling.
+  settings round up using their respective capacity alignments, and
+  `max_capacity` is raised to match `initial_capacity` if the caller provides
+  a smaller ceiling.
 - `DynamicRead` trait, extending `BufRead` with buffer inspection and
   explicit memory management. Implemented for `Reader<R>`.
 - `DynamicReadExt` trait, blanket-implemented for every `DynamicRead`
@@ -85,18 +86,18 @@ dynamically growing buffer and explicit memory control.
 
 #### Fill operations
 
-- `fill`, performing a single underlying read into the buffer.
-- `fill_amount`, a bounded at-least fill that reads until the buffer holds
-  the requested number of unconsumed bytes or the source signals EOF.
-- `fill_exact`, layered on top of `fill_amount` for callers that require an
-  exact byte count.
+- `fill`, performing a single underlying read into available space without
+  growing, retrying interruptions.
+- `fill_amount`, a bounded at-least fill that reads the requested number of
+  additional bytes or stops when the source signals EOF.
+- `fill_exact`, for callers that require an exact additional byte count.
 - `fill_to_end`, reading until EOF subject to the maximum capacity.
 - `fill_until(byte)`, `fill_until_char(ch)`, and `fill_until_str(needle)`,
   reading until a delimiter appears in the buffer.
 - `fill_while(predicate)`, reading while a byte predicate continues to hold.
-- All bounded fills use targeted growth: the buffer only grows enough to
-  satisfy the request, never past `max_capacity`, and is not shrunk after a
-  read error.
+- Reader fills respect `max_capacity`. Multi-read fills grow as needed, with
+  alignment depending on the operation, and may release excess capacity added
+  during the call on completion or EOF. They do not shrink after a read error.
 
 #### Inspection and peeking
 
@@ -117,8 +118,8 @@ dynamically growing buffer and explicit memory control.
 - `clear()` and `discard()` to reset retained data, with documented
   semantics for each.
 - `Reader::take_buffer` to move the underlying `Buffer` out of the reader.
-- Automatic shrinking is suppressed after read errors to avoid discarding
-  partially-read data.
+- Non-exact fills retain partial progress after read errors. Exact fills can
+  advance the source without exposing partial new input in the buffer.
 
 #### Constants and limits
 

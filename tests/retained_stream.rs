@@ -233,3 +233,114 @@ fn test_handoff_preserves_read_ahead_and_the_remaining_source() -> io::Result<()
     assert_eq!(remaining, b"tailrest");
     Ok(())
 }
+
+#[test]
+fn test_exact_fill_error_can_advance_the_source_without_exposing_new_bytes() -> io::Result<()> {
+    let mut reader = Reader::new(Cursor::new(b"header:short"));
+    reader.fill_exact(7)?;
+    reader.consume(7);
+    assert_eq!(
+        reader.fill_exact(10).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(reader.get_ref().position(), 12);
+    assert_eq!(reader.peek_behind(7), b"header:");
+    assert!(reader.peek(usize::MAX).is_empty());
+    // Retrying cannot recover bytes the source supplied to the failed exact read.
+    assert_eq!(reader.fill_to_end()?, 0);
+    Ok(())
+}
+
+#[test]
+fn test_additional_fills_and_capacity_alignment() -> io::Result<()> {
+    let mut reader = Reader::builder(Cursor::new(b"abcdefghijkl"))
+        .initial_capacity(2 * CHUNK_SIZE + 1)
+        .max_capacity(2 * CHUNK_SIZE + 1)
+        .build();
+    assert_eq!(reader.capacity(), 3 * CHUNK_SIZE);
+    assert_eq!(reader.max_capacity(), 4 * CHUNK_SIZE);
+    reader.fill_exact(3)?;
+    reader.consume(2);
+    // The next request is additional input, independent of both retained and unread lengths.
+    assert_eq!(reader.fill_amount(4)?, 9);
+    assert_eq!(reader.peek(usize::MAX), b"cdefghijkl");
+    assert_eq!(reader.peek_behind(2), b"ab");
+    assert_eq!(reader.capacity(), 3 * CHUNK_SIZE);
+    reader.clear();
+    assert!(reader.buffer().is_empty());
+    assert_eq!(reader.capacity(), 3 * CHUNK_SIZE);
+    reader.discard();
+    assert_eq!(reader.capacity(), CHUNK_SIZE);
+    Ok(())
+}
+
+#[test]
+fn test_non_exact_fills_retain_partial_progress() {
+    type Fill = fn(&mut Reader<PausedSource>) -> io::Result<usize>;
+    let fills: [(&str, Fill); 6] = [
+        ("amount", |reader| reader.fill_amount(7)),
+        ("to_end", Reader::fill_to_end),
+        ("while", |reader| {
+            reader.fill_while(|bytes| !bytes.contains(&b'\n'))
+        }),
+        ("byte", |reader| reader.fill_until(b'\n')),
+        ("char", |reader| reader.fill_until_char('\n')),
+        ("str", |reader| reader.fill_until_str("\n")),
+    ];
+    for (name, fill) in fills {
+        let mut reader = Reader::new(PausedSource { step: 0 });
+        assert_eq!(
+            fill(&mut reader).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "{name}"
+        );
+        assert_eq!(reader.buffer(), b"prefix", "{name}");
+        assert_eq!(reader.pos(), 0, "{name}");
+    }
+}
+
+#[test]
+fn test_long_record_grows_across_buffer_and_delimiter_boundaries() -> io::Result<()> {
+    let mut data = vec![b'x'; CHUNK_SIZE - 1];
+    data.extend_from_slice(b"\r\ntail");
+    let mut reader = Reader::builder(Cursor::new(&data))
+        .max_capacity(2 * CHUNK_SIZE)
+        .build();
+    reader.fill_until_str("\r\n")?;
+    let record_len = CHUNK_SIZE + 1;
+    assert_eq!(reader.peek(record_len), &data[..record_len]);
+    assert_eq!(reader.capacity(), 2 * CHUNK_SIZE);
+    reader.consume(record_len);
+    let record = reader.take_consumed();
+    assert_eq!(record.buf(), &data[..record_len]);
+    assert_eq!(reader.peek(usize::MAX), b"tail");
+    assert_eq!(reader.capacity(), CHUNK_SIZE);
+    assert_eq!(reader.fill_to_end()?, 0);
+    Ok(())
+}
+
+struct ReadError;
+
+impl Read for ReadError {
+    fn read(&mut self, _output: &mut [u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::Other.into())
+    }
+}
+
+#[test]
+fn test_growth_before_error_is_retained_until_explicit_reclamation() {
+    let prefix_len = 3 * CHUNK_SIZE;
+    let source = io::repeat(b'x')
+        .take(u64::try_from(prefix_len).unwrap())
+        .chain(ReadError);
+    let mut reader = Reader::new(source);
+    assert_eq!(
+        reader.fill_to_end().unwrap_err().kind(),
+        io::ErrorKind::Other
+    );
+    assert_eq!(reader.buffer(), vec![b'x'; prefix_len]);
+    assert_eq!(reader.capacity(), 4 * CHUNK_SIZE);
+    reader.shrink();
+    assert_eq!(reader.capacity(), prefix_len);
+    assert_eq!(reader.buffer().len(), prefix_len);
+}
