@@ -4,7 +4,7 @@ A `BufReader`-style wrapper with a dynamically growing buffer and explicit memor
 
 `std::io::BufReader` allocates a fixed buffer (8 KiB by default, configurable via `with_capacity`).
 Once set, that size never changes. The `Reader` from this crate starts small and grows its buffer
-automatically as data arrives, up to a configurable maximum. It also gives you explicit control
+during multi-read fill operations, up to a configurable maximum. It also gives you explicit control
 over memory: you decide when to compact, shrink, or discard buffered data.
 
 This is intended for tokenizers, protocol parsers, and other use cases where input sizes are
@@ -12,8 +12,9 @@ unpredictable, lookbehind is useful, and you want to manage buffer lifetime your
 
 ## Features
 
-- **Automatic buffer growth**: the buffer starts at `CHUNK_SIZE` (8 KiB), grows automatically as
-  reads require more room, and never grows past the configured maximum capacity.
+- **Automatic buffer growth**: the default buffer starts at `CHUNK_SIZE` (8 KiB). Multi-read
+  fills grow it as needed, up to the configured maximum. A single `fill()` uses only existing
+  space; standard `Read` and `BufRead` operations reuse the buffer without growing it.
 - **Manual memory management**: `compact()` reclaims consumed space, `shrink()` releases unused
   capacity, while `clear()` and `discard()` reset retained data.
 - **Builder pattern**: configure initial and maximum capacity via `Reader::builder(reader)`.
@@ -75,8 +76,36 @@ let reader = Reader::builder(Cursor::new(vec![0u8; 1024]))
     .build();
 ```
 
-Requested capacities are rounded up to the crate's internal chunk alignment. If the maximum
-capacity is smaller than the initial capacity, it is raised to match the initial capacity.
+Initial capacity is rounded up to a multiple of `CHUNK_SIZE`; the maximum uses the buffer's
+exponential growth alignment. If the rounded maximum is smaller than the initial capacity,
+it is raised to match the initial capacity.
+
+## Retention and fill results
+
+Dynamic fills append to retained data, including bytes already consumed. Consume followed by
+`compact()` makes that space reusable; consuming alone does not. Standard `Read`/`BufRead`
+operations may discard consumed lookbehind when fetching more input, and successful seeks
+clear retained data.
+
+A delimiter fill returns the number of **new bytes read**, not the delimiter position. Inspect
+the unconsumed bytes to find the delimiter: a return of zero can also mean it was already
+present, the source returned EOF, or retained data filled the configured capacity. Filling can
+read ahead beyond the delimiter. Character and string searches interpret UTF-8 and may reject
+invalid data; byte searches work on arbitrary bytes.
+
+Multi-read fills may release excess capacity they added when they complete or reach EOF. They
+retain bytes read before an I/O error. `fill_exact()` is different: on error, do not rely on
+recovering partial new input from the buffer; the underlying source may already have advanced.
+`shrink()` and `discard()` let you release capacity explicitly, but capacity is not a measurement
+of total process memory.
+
+`take_consumed()` returns an owned buffer holding the consumed prefix. It allocates a replacement
+and copies the unread suffix into it; shrinking the returned buffer may also move its storage.
+Keep the returned buffer alive and borrow from it when needed. `take_buffer()` transfers all
+retained data, including read-ahead that must be handled before continuing with the source.
+
+The [consumer scenarios](tests/retained_stream.rs) exercise these contracts together; the
+[coverage notes](tests/README.md) map documentation claims to unit and integration tests.
 
 ## Minimum Supported Rust Version
 

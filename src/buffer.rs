@@ -439,9 +439,9 @@ impl Buffer {
     /// so every byte it holds is still marked consumed. The unconsumed bytes are kept at the start
     /// of a fresh replacement buffer with the read position reset to 0.
     ///
-    /// The existing allocation leaves with the returned buffer, so only the unconsumed bytes are
-    /// copied (into the replacement). When nothing is consumed, an empty default buffer is
-    /// returned and `self` is left untouched.
+    /// A replacement buffer is allocated and the unconsumed bytes are copied into it. The old
+    /// storage is transferred to the returned buffer, then shrunk; that shrink may move storage
+    /// too. When nothing is consumed, an empty default buffer is returned and `self` is untouched.
     ///
     /// # Examples
     ///
@@ -1021,7 +1021,7 @@ impl Buffer {
 
     /// Reads from a reader while a predicate holds, growing the buffer as needed.
     ///
-    /// After each successful read, the predicate is called with the full unconsumed data
+    /// Before each read, the predicate is called with the full unconsumed data
     /// (`&self.buf()[self.pos()..self.len()]`). Reading continues while the predicate returns
     /// `true`.
     ///

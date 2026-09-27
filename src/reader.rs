@@ -420,12 +420,14 @@ impl<R: Read + ?Sized> DynamicRead for Reader<R> {
     ///
     /// See [`DynamicRead::fill_while_dyn`] for the general contract.
     ///
-    /// This implementation returns `0` without reading in three cases:
+    /// A return of `0` can mean any of the following:
     ///
     /// - The predicate returned `false` on the existing unconsumed data.
-    /// - The underlying reader reached EOF while the predicate was still unsatisfied.
+    /// - An underlying read returned EOF before any new bytes were read.
     /// - The buffer reached [`max_capacity`](ReaderBuilder::max_capacity)
     ///   while the predicate was still unsatisfied.
+    ///
+    /// Bytes read before an I/O error remain retained, but no count is returned on error.
     fn fill_while_dyn(&mut self, predicate: &mut dyn FnMut(&[u8]) -> bool) -> io::Result<usize> {
         self.buffer
             .fill_while(&mut self.inner, predicate, Some(self.max_capacity))
@@ -483,10 +485,9 @@ impl<R: ?Sized> Reader<R> {
 
     /// Replaces the internal buffer with a fresh default-capacity buffer and returns the old one.
     ///
-    /// Useful when retained slices into the buffer must outlive the reader's continued use, for
-    /// example when handing parsed bytes to another component while the reader keeps reading.
-    /// The returned buffer can be parked alongside those slices and dropped once they are no
-    /// longer needed.
+    /// Keep the returned buffer alive and borrow its bytes when needed, independently of further
+    /// reads. It includes any unconsumed read-ahead; handle those bytes before continuing with
+    /// input from the replacement buffer.
     ///
     /// The replacement starts at the default capacity; it will grow as subsequent reads require.
     #[inline]
@@ -498,13 +499,14 @@ impl<R: ?Sized> Reader<R> {
     /// unconsumed portion.
     ///
     /// Like [`take_buffer`](Self::take_buffer), but only the consumed lookbehind leaves the
-    /// reader: the returned [`Buffer`] is shortened and shrunk to exactly the consumed bytes,
-    /// with its read position at the end of that data so every byte it holds is still marked
+    /// reader: the returned [`Buffer`] holds exactly the consumed bytes, with chunk-rounded
+    /// capacity. Its read position is at the end of that data, so every byte is still marked
     /// consumed. The unconsumed bytes stay in the reader at the start of a fresh replacement
     /// buffer, so subsequent reads continue where they left off.
     ///
     /// The replacement starts at the smallest capacity that fits the unconsumed data; it will
-    /// grow as subsequent reads require.
+    /// grow as subsequent reads require. This allocates a replacement and copies the unconsumed
+    /// suffix into it. Shrinking the returned buffer may also move its storage.
     #[must_use = "use `compact` to discard the consumed data instead"]
     #[inline]
     pub fn take_consumed(&mut self) -> Buffer {
@@ -583,6 +585,8 @@ impl<R: Read + ?Sized> Reader<R> {
     /// Returns an error if the reader reaches EOF before `amt` bytes are read
     /// ([`UnexpectedEof`](io::ErrorKind::UnexpectedEof)), or if the request would cause the buffer
     /// to exceed `max_capacity` ([`InvalidInput`](io::ErrorKind::InvalidInput)).
+    /// On I/O error, the source may have advanced; do not rely on recovering partial new input
+    /// from the buffer. Use a non-exact fill when partial progress must remain inspectable.
     pub fn fill_exact(&mut self, amt: usize) -> io::Result<()> {
         self.ensure_fill_within_max_capacity(amt)?;
 

@@ -3,7 +3,8 @@ use std::io::{self, BufRead};
 /// Extension of [`std::io::BufRead`] with retained-buffer inspection and capacity management.
 ///
 /// Provides access to retained buffer contents and methods to manage their memory. Implementors may
-/// grow automatically during reads; shrinking is explicit.
+/// grow during fills. Capacity changes depend on the implementation; explicit shrinking is also
+/// available.
 ///
 /// This trait is the retained-buffer surface. Its fill methods preserve retained consumed data
 /// while reading. Inherited [`std::io::BufRead`] and [`std::io::Read`] methods may discard retained

@@ -2,9 +2,10 @@
 //! memory control.
 //!
 //! [`BufReader`](std::io::BufReader) allocates a fixed buffer (8 KiB by default). Once set, that
-//! size never changes. The [`Reader`] starts at the same 8 KiB and grows automatically as data
-//! arrives, up to a configurable maximum. It also gives you explicit control over memory: you
-//! decide when to compact the buffer, shrink its capacity, or discard it.
+//! size never changes. The [`Reader`] defaults to the same 8 KiB and can grow during multi-read
+//! fill operations, up to a configurable maximum. Single [`DynamicRead::fill`] calls and
+//! standard I/O operations do not grow the buffer. It also gives you explicit control over memory:
+//! you decide when to compact the buffer, shrink its capacity, or discard it.
 //!
 //! # When to use this
 //!
