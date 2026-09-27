@@ -1,9 +1,8 @@
 # Releasing strata-reader
 
-How a release is verified, tagged, published, and recorded. The checks are the Rust library
-recipe from [strata-template](https://codeberg.org/Devious-Concepts/strata-template), run in
-release order on the exact commit that is tagged. Contributors need only the fast checks, which
-[CONTRIBUTING.md](CONTRIBUTING.md) lists.
+This procedure applies the
+[Rust library verification recipe](https://codeberg.org/Devious-Concepts/strata-template/src/branch/main/ci/rust-library/README.md).
+For contributor checks, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 1. Prepare the release commit
 
@@ -50,8 +49,7 @@ cargo +"$msrv" test --doc --all-features
 ```bash
 cargo package --list
 cargo package
-cd target/package/strata-reader-<version>
-cargo test --all-features
+(cd target/package/strata-reader-<version> && cargo test --all-features)
 ```
 
 The listing must contain every file the README, changelog, and licensing documents link to, and
@@ -61,7 +59,7 @@ testable as shipped.
 
 ## 3. Tag and publish
 
-From the same checkout, still on the gated commit:
+From the repository root, still on the gated commit:
 
 ```bash
 git tag <version>
