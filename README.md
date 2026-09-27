@@ -29,6 +29,13 @@ unpredictable, lookbehind is useful, and you want to manage buffer lifetime your
   clears the buffer after successful seeks, and `Reader::seek_relative()` can move within
   retained buffered data without touching the inner reader.
 
+## Benchmarks
+
+The [benchmark guide](benches/README.md) describes reproducible sequential I/O comparisons,
+boundary-crossing records, growth, and retained-buffer operations. Run the workloads with
+`cargo bench --bench reader`; use `cargo bench --bench reader -- --test` for a quick correctness
+check. Measurements describe those workloads, not a general speed or memory guarantee.
+
 ## Usage
 
 ```rust
