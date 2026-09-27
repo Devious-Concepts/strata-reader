@@ -1,11 +1,21 @@
-//! Print LF-terminated records, retaining each record until it has been processed.
-//! Run with no arguments for sample input, or pass a file path.
+//! Inspect LF-terminated byte records while keeping each record available after consumption.
+//! `fill_until` can grow across reads and retain read-ahead for the next record. `peek_behind`
+//! lets the processing step use the consumed record before `compact` releases that lookbehind.
+//!
+//! Run: `cargo run --example records -- [file]` (omit the optional file for built-in input).
+//! The built-in input prints `12 bytes: name=Strata` and `15 bytes: mode=read-only` on two lines.
+//! Records may contain arbitrary bytes, must end in LF, and must fit in 32 KiB including LF.
+//! These are this program's format choices. It returns I/O errors without retrying; output
+//! already written remains written. For ordinary text lines without retention, `BufRead::lines`
+//! is a simpler starting point.
 
 use std::io::{self, BufRead, Cursor, Read, Write};
 use strata_reader::{DynamicRead, Reader, constants::CHUNK_SIZE};
 
+const RECORD_CAPACITY: usize = 4 * CHUNK_SIZE;
+
 fn print_records(input: impl Read, mut output: impl Write) -> io::Result<()> {
-    let mut reader = Reader::builder(input).max_capacity(CHUNK_SIZE).build();
+    let mut reader = Reader::builder(input).max_capacity(RECORD_CAPACITY).build();
 
     loop {
         reader.fill_until(b'\n')?;
