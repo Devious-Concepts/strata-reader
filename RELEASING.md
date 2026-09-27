@@ -15,15 +15,12 @@ In a pull request, as for any other change:
 - Give the changelog entry its version, date, and link.
 - Add anything new that should ship to the `include` list in `Cargo.toml`.
 
-Merge it so that the commit reaches `main` unchanged. That commit is what the gate runs on and
-what gets tagged.
-
 ## 2. Run the gate
 
-Check out the release commit and confirm that `git status --porcelain` prints nothing; never use
-`--allow-dirty`. Plain `cargo` uses the development compiler that `rust-toolchain.toml` selects.
-All three stages must pass. If CI has already run the first two on this exact commit and passed,
-cite that run in the record instead of repeating them.
+Check out the pull request's head commit and confirm that `git status --porcelain` prints
+nothing; never use `--allow-dirty`. Plain `cargo` uses the development compiler that
+`rust-toolchain.toml` selects. All three stages must pass. If CI has already run the first two
+on this exact commit and passed, cite that run instead of repeating them.
 
 ### Fast checks
 
@@ -56,12 +53,17 @@ cargo package
 
 The listing must contain every file the README, changelog, and licensing documents link to, and
 every test, example, or benchmark meant to ship. If it does not, fix the `include` list in a new
-release commit and start over. The tests in the extracted copy show that the published source is
+commit and run the gate again. The tests in the extracted copy show that the published source is
 testable as shipped.
+
+Report the results in the pull request description: the commit, the host, the compiler versions,
+the test counts per stage, and every ignored test with its reason. Then merge with a
+fast-forward, so that the gated commit is the one that reaches `main`. A rebase after the gate
+produces a new commit; gate that one instead.
 
 ## 3. Tag and publish
 
-From the repository root, still on the gated commit:
+From the repository root, on the gated commit:
 
 ```bash
 git tag <version>
@@ -75,40 +77,3 @@ Tags are the bare version, without a `v` prefix. Then:
   that docs.rs builds it.
 - Create the forge release from the tag with the changelog entry as its body.
 - Update anything that reports release status, such as an ecosystem hub, in its own repository.
-
-## 4. Record the release
-
-Add `docs/releases/<version>.md` in a pull request, using this form. Keep it factual and short: it
-states what was tested, on what, and what was published.
-
-```markdown
-# strata-reader <version> release record
-
-| Field | Value |
-| --- | --- |
-| Commit | `<full commit hash>`, tag `<version>` |
-| Host | <operating system, kernel, and architecture> |
-| Development compiler | <`rustc --version` and `cargo --version`> |
-| MSRV compiler | <`rustc +<msrv> --version`> |
-| Gate run | <date>, by <who> |
-
-## Results
-
-| Stage | Result |
-| --- | --- |
-| Fast checks | <pass; test and doctest counts, or the CI run> |
-| Minimum supported Rust version <msrv> | <pass; counts, or the CI run> |
-| Package | <pass; `cargo test --all-features` counts in the extracted copy> |
-
-Ignored tests: <each one with its reason and tracking issue, or "none">.
-
-## Package
-
-`cargo package --list`, <N> files:
-
-<the listing>
-
-## Publication
-
-<registry version, docs.rs build, forge release, and anything deferred>
-```
