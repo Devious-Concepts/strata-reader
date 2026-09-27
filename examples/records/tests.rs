@@ -9,6 +9,7 @@ fn test_sample_output() {
     // The built-in sample contains two complete records in one read
     let mut output = Vec::new();
     print_records(b"name=Strata\nmode=read-only\n".as_slice(), &mut output).unwrap();
+
     assert_eq!(output, b"12 bytes: name=Strata\n15 bytes: mode=read-only\n");
 }
 
@@ -17,8 +18,10 @@ fn test_empty_input_and_empty_record() {
     // EOF without data produces no output; a lone LF is a complete empty record
     let mut output = Vec::new();
     print_records(io::empty(), &mut output).unwrap();
+
     assert!(output.is_empty());
     print_records(b"\n".as_slice(), &mut output).unwrap();
+
     assert_eq!(output, b"1 bytes: \n");
 }
 
@@ -53,6 +56,7 @@ fn test_short_reads_and_output_errors() {
     let input = b"split".as_slice().chain(b"\n".as_slice());
     let mut output = Vec::new();
     print_records(input, &mut output).unwrap();
+
     assert_eq!(output, b"6 bytes: split\n");
 
     let mut full_output = [0; 0];
