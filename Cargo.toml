@@ -18,6 +18,7 @@ include = [
   "src/read.rs",
   "src/reader.rs",
   "src/reader/tests.rs",
+  "benches/**",
   "Cargo.toml",
   "Cargo.lock",
   "examples/**",
@@ -76,3 +77,10 @@ test = true
 [[example]]
 name = "binary_frames"
 test = true
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "reader"
+harness = false
