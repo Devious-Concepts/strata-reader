@@ -1,37 +1,28 @@
 # Releasing strata-reader
 
-How a release of this crate is verified, recorded, tagged, and published. The checks are the
-Rust library recipe from [strata-template](https://codeberg.org/Devious-Concepts/strata-template);
-this document orders them for a release and adds the evidence that is kept. Contributors do not
-need any of this: the fast checks they run are listed in [CONTRIBUTING.md](CONTRIBUTING.md).
+How a release is verified, tagged, published, and recorded. The checks are the Rust library
+recipe from [strata-template](https://codeberg.org/Devious-Concepts/strata-template), run in
+release order on the exact commit that is tagged. Contributors need only the fast checks, which
+[CONTRIBUTING.md](CONTRIBUTING.md) lists.
 
 ## 1. Prepare the release commit
 
 In a pull request, as for any other change:
 
-- Set `version` in `Cargo.toml`. Keep `rust-version` accurate: if this release needs a newer
-  compiler, raise it there, verify that version in the gate below, and note the change in the
-  changelog and the README.
-- Give the changelog entry its version, the actual date, and its link.
-- Compare the explicit `include` list in `Cargo.toml` with everything added since the last
-  release: source modules, tests, examples, benchmarks, and helpers that should ship, plus every
-  file the README, changelog, and licensing documents link to.
-- Run the fast checks and report the results in the pull request.
+- Set `version` in `Cargo.toml`. If the release needs a newer compiler, raise `rust-version` too
+  and note it in the changelog and the README.
+- Give the changelog entry its version, date, and link.
+- Add anything new that should ship to the `include` list in `Cargo.toml`.
 
-Merge so that the release commit reaches `main` unchanged. The gate runs on the commit that will
-be tagged; anything that rewrites it, such as a squash, moves the gate to the rewritten commit.
+Merge it so that the commit reaches `main` unchanged. That commit is what the gate runs on and
+what gets tagged.
 
-## 2. Check out the release commit
+## 2. Run the gate
 
-Check out the commit and confirm that `git status --porcelain` prints nothing. `cargo package`
-refuses a dirty working tree, and `--allow-dirty` is not part of this procedure: a package built
-from uncommitted changes has no commit to be traced back to.
-
-## 3. Run the gate
-
-Three stages, all required to pass. Plain `cargo` uses the development compiler that
-`rust-toolchain.toml` selects. If CI has already run the first two stages on this exact commit
-and passed, cite that run in the record instead of repeating them.
+Check out the release commit and confirm that `git status --porcelain` prints nothing; never use
+`--allow-dirty`. Plain `cargo` uses the development compiler that `rust-toolchain.toml` selects.
+All three stages must pass. If CI has already run the first two on this exact commit and passed,
+cite that run in the record instead of repeating them.
 
 ### Fast checks
 
@@ -43,14 +34,12 @@ cargo test --doc --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-Keep the doctest line: `--all-targets` does not include documentation tests.
-
 ### Minimum supported Rust version
 
-Check the minimum this release declares, with a toolchain of exactly that version:
+With a toolchain of exactly the version `rust-version` declares:
 
 ```bash
-msrv=1.87.0   # the rust-version in Cargo.toml
+msrv=<rust-version>
 rustup toolchain install "$msrv" --profile minimal
 cargo +"$msrv" test --all-targets --all-features
 cargo +"$msrv" test --doc --all-features
@@ -65,15 +54,32 @@ cd target/package/strata-reader-<version>
 cargo test --all-features
 ```
 
-Read the listing before moving on. It must contain every file the README, changelog, and
-licensing documents link to, and every test, example, or benchmark meant to ship; fix the
-`include` list in a new release commit if it does not. Testing the extracted copy shows that the
-published source is testable as shipped.
+The listing must contain every file the README, changelog, and licensing documents link to, and
+every test, example, or benchmark meant to ship. If it does not, fix the `include` list in a new
+release commit and start over. The tests in the extracted copy show that the published source is
+testable as shipped.
 
-## 4. Record the results
+## 3. Tag and publish
 
-Commit the record as `docs/releases/<version>.md`, after the tag, using this form. It states what
-was tested and on what; the tests already ran, so keep it factual and short.
+From the same checkout, still on the gated commit:
+
+```bash
+git tag <version>
+git push origin <version>
+cargo publish
+```
+
+Tags are the bare version, without a `v` prefix. Then:
+
+- Check that the registry shows the intended version, README, license, and `rust-version`, and
+  that docs.rs builds it.
+- Create the forge release from the tag with the changelog entry as its body.
+- Update anything that reports release status, such as an ecosystem hub, in its own repository.
+
+## 4. Record the release
+
+Add `docs/releases/<version>.md` in a pull request, using this form. Keep it factual and short: it
+states what was tested, on what, and what was published.
 
 ```markdown
 # strata-reader <version> release record
@@ -106,24 +112,3 @@ Ignored tests: <each one with its reason and tracking issue, or "none">.
 
 <registry version, docs.rs build, forge release, and anything deferred>
 ```
-
-## 5. Tag and publish
-
-From the same checkout, still on the gated commit:
-
-```bash
-git tag <version>
-git push origin <version>
-cargo publish
-```
-
-Tags are the bare version, without a `v` prefix. `cargo publish` packages the commit again and
-verifies it before uploading. Afterwards:
-
-- Check that the registry shows the intended version, README, license, and `rust-version`, and
-  that docs.rs builds it.
-- Create the forge release from the tag with the changelog entry as its body.
-- Finish the record with the publication results and commit it.
-- Update anything that reports release status, such as an ecosystem hub, in its own repository.
-
-The procedure ends here. It does not sign tags or packages, and it does not automate publishing.

@@ -53,8 +53,8 @@ description:
   RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
   ```
 
-  Releases also check the declared minimum compiler and the packaged source; that procedure is
-  in [RELEASING.md](RELEASING.md).
+  Releases also check the minimum supported compiler and the packaged source; see
+  [RELEASING.md](RELEASING.md).
 
 ## Provenance
 
