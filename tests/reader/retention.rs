@@ -20,33 +20,41 @@ impl<R: Read> Read for ShortReads<R> {
 /// Fill a large input, consume a prefix, then compact and shrink without losing its suffix.
 #[test]
 fn test_growth_compaction_and_explicit_reclamation() {
+    // A single fill uses the initial capacity and stops when that storage is full
     let data = vec![b'x'; 3 * CHUNK_SIZE];
     let mut reader = Reader::new(Cursor::new(&data));
     let len = reader.fill().unwrap();
 
-    // Check the number of new bytes, separately from the retained buffer below
     assert_eq!(len, CHUNK_SIZE);
     let len = reader.fill().unwrap();
 
-    // Check the number of new bytes, separately from the retained buffer below
-    assert_eq!(len, 0); // A single fill never grows a full buffer.
+    assert_eq!(len, 0);
     assert_eq!(reader.capacity(), CHUNK_SIZE);
+
+    // The multi-read fill grows to read the rest and shrinks its excess space at EOF
     let len = reader.fill_to_end().unwrap();
 
-    // Check the number of new bytes, separately from the retained buffer below
     assert_eq!(len, 2 * CHUNK_SIZE);
-    // Growth reached four chunks, then the completed fill released its excess chunk.
+    assert_eq!(reader.buffer(), data);
     assert_eq!(reader.capacity(), 3 * CHUNK_SIZE);
+
+    // Compaction removes the consumed prefix, but does not release its capacity
     reader.consume(2 * CHUNK_SIZE);
     reader.compact();
+
     assert_eq!(reader.buffer(), &data[..CHUNK_SIZE]);
+    assert_eq!(reader.pos(), 0);
     assert_eq!(reader.capacity(), 3 * CHUNK_SIZE);
+
+    // Shrink explicitly after a large record has passed through
     reader.shrink();
+
+    assert_eq!(reader.buffer(), &data[..CHUNK_SIZE]);
     assert_eq!(reader.capacity(), CHUNK_SIZE);
-    reader.clear();
-    assert!(reader.buffer().is_empty());
-    assert_eq!(reader.capacity(), CHUNK_SIZE);
+
     reader.discard();
+
+    assert!(reader.buffer().is_empty());
     assert_eq!(reader.pos(), 0);
     assert_eq!(reader.capacity(), CHUNK_SIZE);
 }
@@ -54,6 +62,7 @@ fn test_growth_compaction_and_explicit_reclamation() {
 /// Reassemble unread input after transferring a whole buffer and then decomposing the reader.
 #[test]
 fn test_handoff_preserves_read_ahead_and_the_remaining_source() {
+    // Only the header is consumed; part of the body is buffered and part is still in the source
     let source = ShortReads {
         inner: Cursor::new(b"headtailrest"),
         limit: 8,
@@ -62,14 +71,23 @@ fn test_handoff_preserves_read_ahead_and_the_remaining_source() {
     reader.fill().unwrap();
     reader.consume(4);
     let saved = reader.take_buffer();
+
     assert_eq!(saved.buf(), b"headtail");
     assert_eq!(saved.pos(), 4);
     assert!(reader.buffer().is_empty());
+
+    // Refill once, then hand both the source and this second buffer to another consumer
     reader.fill().unwrap();
     let (mut source, buffered) = reader.into_parts();
+
+    assert_eq!(buffered.buf(), b"rest");
+    assert_eq!(buffered.pos(), 0);
+
+    // The consumer must use both unread buffer regions before continuing with the source
     let mut remaining = saved.buf()[saved.pos()..].to_vec();
     remaining.extend_from_slice(&buffered.buf()[buffered.pos()..]);
     source.read_to_end(&mut remaining).unwrap();
+
     assert_eq!(remaining, b"tailrest");
 }
 
