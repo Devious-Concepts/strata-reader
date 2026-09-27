@@ -10,6 +10,8 @@ In a pull request, as for any other change:
 
 - Set `version` in `Cargo.toml`. If the release needs a newer compiler, raise `rust-version` too
   and note it in the changelog and the README.
+- If `Cargo.lock` is tracked, run `cargo update --workspace` and include its changes in the
+  release commit.
 - Give the changelog entry its version, date, and link.
 - Add anything new that should ship to the `include` list in `Cargo.toml`.
 
