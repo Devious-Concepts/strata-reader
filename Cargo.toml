@@ -10,6 +10,7 @@ categories = ["data-structures", "parsing"]
 license = "MPL-2.0"
 readme = "README.md"
 include = [
+  "examples/**",
   "src/buffer.rs",
   "src/buffer/tests.rs",
   "src/constants.rs",
@@ -62,3 +63,11 @@ print_stdout = "warn"
 todo = "warn"
 unimplemented = "warn"
 unwrap_used = "warn"
+
+[[example]]
+name = "records"
+test = true
+
+[[example]]
+name = "retained_prefix"
+test = true
