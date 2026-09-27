@@ -4,6 +4,15 @@
 
 use super::*;
 
+/// A source that reports a read error after an earlier chained source has been exhausted.
+struct ReadError;
+
+impl Read for ReadError {
+    fn read(&mut self, _output: &mut [u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::WouldBlock.into())
+    }
+}
+
 #[test]
 fn test_print_frames() {
     // These frames arrive together; the newline in the first payload is just another byte
@@ -63,4 +72,21 @@ fn test_print_frames_at_capacity_and_across_refills() {
 
     let expected = format!("8190 bytes:{}\n", " 00".repeat(8190)).repeat(3);
     assert_eq!(output, expected.as_bytes());
+}
+
+#[test]
+fn test_print_frames_io_errors() {
+    // The first frame is printed before a read error interrupts the next payload
+    let input = b"\x00\x01x\x00\x03a".as_slice().chain(ReadError);
+    let mut output = Vec::new();
+    let error = print_frames(input, &mut output).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(output, b"1 bytes: 78\n");
+
+    // Output errors are returned to the caller as well
+    let mut full_output = [0; 0];
+    let error = print_frames(b"\x00\x00".as_slice(), full_output.as_mut_slice()).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::WriteZero);
 }

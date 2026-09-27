@@ -4,6 +4,15 @@
 
 use super::*;
 
+/// A source that reports a read error after an earlier chained source has been exhausted.
+struct ReadError;
+
+impl Read for ReadError {
+    fn read(&mut self, _output: &mut [u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::WouldBlock.into())
+    }
+}
+
 #[test]
 fn test_sample_output() {
     // The built-in sample contains two complete records in one read
@@ -80,4 +89,15 @@ fn test_records_across_refills() {
     print_records(b"\x00\xff\n".as_slice(), &mut output).unwrap();
 
     assert_eq!(output, b"3 bytes: \x00\xff\n");
+}
+
+#[test]
+fn test_records_read_error() {
+    // Finish one record, then fail while trying to complete the next one
+    let input = b"ok\npartial".as_slice().chain(ReadError);
+    let mut output = Vec::new();
+    let error = print_records(input, &mut output).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(output, b"3 bytes: ok\n");
 }

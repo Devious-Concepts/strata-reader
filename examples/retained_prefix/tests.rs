@@ -4,6 +4,15 @@
 
 use super::*;
 
+/// A source that reports a read error after an earlier chained source has been exhausted.
+struct ReadError;
+
+impl Read for ReadError {
+    fn read(&mut self, _output: &mut [u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::WouldBlock.into())
+    }
+}
+
 #[test]
 fn test_copy_body() {
     // Both header and body fit in the initial read; the body must not be skipped during transfer
@@ -41,4 +50,21 @@ fn test_copy_body_empty_and_missing_header() {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(output.is_empty());
     }
+}
+
+#[test]
+fn test_copy_body_io_errors() {
+    // A read failure does not roll back body bytes already copied to the output
+    let input = b"kind=text\npartial".as_slice().chain(ReadError);
+    let mut output = Vec::new();
+    let error = copy_body(input, &mut output).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(output, b"partial");
+
+    // A destination with no space reports its write failure
+    let mut full_output = [0; 0];
+    let error = copy_body(b"kind=text\nx".as_slice(), &mut full_output.as_mut_slice()).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::WriteZero);
 }
