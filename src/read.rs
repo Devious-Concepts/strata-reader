@@ -89,18 +89,25 @@ pub trait DynamicReadExt: DynamicRead {
     /// **Note**: For larger buffers you may want to track checked data to avoid re-checking the
     /// same data.
     ///
-    /// ```ignore
+    /// ```
+    /// use strata_reader::{DynamicReadExt, Reader};
+    /// use std::io::{self, Cursor};
+    ///
+    /// # fn main() -> io::Result<()> {
+    /// let data = b"first\nsecond\n";
+    /// let mut reader = Reader::new(Cursor::new(data));
     /// let mut newline_pos = None;
     /// let bytes_read = reader.fill_while(|buf| {
     ///     newline_pos = buf.iter().position(|&b| b == b'\n');
     ///     newline_pos.is_none()
     /// })?;
     ///
-    /// if let Some(pos) = newline_pos {
-    ///     // newline found at `pos`, process the buffer
-    /// } else {
-    ///     // predicate unsatisfied, could not read more
-    /// }
+    /// // The predicate finds the first newline; the read can include later records too.
+    /// assert_eq!(newline_pos, Some(5));
+    /// assert_eq!(bytes_read, data.len());
+    /// assert_eq!(reader.peek(6), b"first\n");
+    /// # Ok(())
+    /// # }
     /// ```
     fn fill_while<P>(&mut self, mut predicate: P) -> io::Result<usize>
     where
