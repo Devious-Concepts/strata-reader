@@ -1,55 +1,147 @@
-# Initial benchmark observation
+# Reader benchmark results
 
-Measured 2026-09-27 from `02a3a97548ce89999a17821a0e6bf1c9bc3963e9`.
-The subsequent documentation commit adds this record without changing the measured Rust source.
-See the [methodology](README.md) for workloads and timing boundaries.
+These measurements answer four separate questions: wrapper overhead, record-processing strategy,
+retained-prefix ownership, and initial capacity. The comparisons below use two complete runs of
+the same code on one machine. They replace the first submission's mixed comparison table.
 
-- Compiler: `rustc 1.98.1 (48a229cea 2026-09-01)`, LLVM 22.1.8.
-- Target: `x86_64-unknown-linux-gnu`; Linux `7.2.7-zen1-1-zen`.
-- CPU: Intel Core i9-11900K, advertised 3.50 GHz; CPU 0 governor reported `powersave`.
-- Cargo's standard optimized bench profile, no custom compiler flags supplied for this run.
-- Criterion 0.8.2; resolved dependencies captured in [baseline.lock](baseline.lock).
+**How to read the tables:** times are point estimates from run A, per complete input or operation
+as stated in each section. Ratio columns show **A / B**, the same comparison repeated in run B.
+A time ratio above 1 means the numerator took longer. Ratios use unrounded estimates.
+[results.csv](results.csv) contains all 82 estimates and their 95% confidence intervals in
+nanoseconds; the displayed A/B ratios are repeat observations, not confidence intervals.
+
+## 1. Sequential reads
+
+**Question:** what does a wrapper add when reading an in-memory source with the same copy loop?
+Both wrappers start at 8 KiB. The bare Cursor has no buffer allocation. Each iteration reads the
+entire input, including construction, the fixed output array, EOF, and destruction.
+
+| Read call size | Input | Cursor | Reader | BufReader | Reader / BufReader (A / B) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 KiB | 1 KiB | 14.1 ns | 84.4 ns | 43.8 ns | 1.93× / 1.97× |
+| 1 KiB | 8 KiB | 81.4 ns | 202.4 ns | 137.8 ns | 1.47× / 1.37× |
+| 1 KiB | 1 MiB | 15.84 µs | 24.75 µs | 25.96 µs | 0.95× / 0.95× |
+| 16 KiB | 1 KiB | 69.1 ns | 120.6 ns | 84.0 ns | 1.44× / 1.44× |
+| 16 KiB | 8 KiB | 99.1 ns | 150.8 ns | 108.8 ns | 1.39× / 1.32× |
+| 16 KiB | 1 MiB | 15.90 µs | 16.76 µs | 16.62 µs | 1.01× / 1.02× |
+
+**Conclusion:** Reader costs more for the two small inputs in these runs. On 1 MiB, the wrappers
+are much closer: Reader takes about 5% less time with 1 KiB calls, and 1–2% more with 16 KiB calls.
+Neither wrapper wins every case. The 16 KiB calls let the wrappers bypass their buffers, but
+also change the call count and stack-array initialization cost; that is not an isolated measure
+of bypassing. Cursor remains a useful control for this memory-copy loop, not a prediction for
+unbuffered disk or socket I/O.
+
+## 2. Record processing
+
+**Question A:** how do the readers compare when the caller does the same work? Both use the
+same `read_until` loop and a reused record Vec. Each iteration processes **64 records**; sizes
+include LF. Construction, searching, copies, EOF, and destruction are timed.
+
+| Bytes per record | Reader, copied | BufReader, copied | Reader / BufReader (A / B) |
+| ---: | ---: | ---: | ---: |
+| 64 | 819.2 ns | 794.4 ns | 1.03× / 1.03× |
+| 8192 | 39.75 µs | 40.04 µs | 0.99× / 1.01× |
+| 8193 | 38.34 µs | 38.39 µs | 1.00× / 1.01× |
+
+**Conclusion:** the matched copied recipes are close: Reader is about 3% slower for 64-byte
+records, while the ordering for the two larger record sizes reverses between runs. The earlier
+large gap between a Reader borrowed recipe and a BufReader copied recipe did not isolate the
+choice of reader. This pair does not support that earlier interpretation.
+
+**Question B:** when borrowing retained records, how often should this recipe compact? Both
+variants use Reader and the same search/processing loop; one compacts after every record and
+the other waits until the next delimiter is missing and it needs to fill. Processing receives
+a temporary slice. The last column also compares this borrowed recipe with Reader's copied one.
+
+| Bytes per record | Compact each | Compact on fill | On fill / each (A / B) | On fill / Reader copied (A / B) |
+| ---: | ---: | ---: | ---: | ---: |
+| 64 | 2.81 µs | 2.26 µs | 0.80× / 0.81× | 2.76× / 2.84× |
+| 8192 | 206.03 µs | 206.43 µs | 1.00× / 1.02× | 5.19× / 5.09× |
+| 8193 | 235.01 µs | 236.90 µs | 1.01× / 1.01× | 6.18× / 6.05× |
+
+**Conclusion:** delaying compaction saves about 19% for the small records in these runs, where
+many records arrive together. For records around 8 KiB there is no measured benefit from that
+schedule. Both borrowed recipes still take substantially longer than the copied loop here.
+Avoiding a record copy alone therefore does not make this recipe faster. Its searches and
+retention management are part of the measured cost; identifying the dominant component would
+require a separate profiling experiment. Borrowing remains an ownership choice, not a speed
+claim established by this benchmark.
+
+## 3. Retention operations
+
+Every fixture starts with **64 KiB buffered**. One iteration performs one operation. Fixture
+construction/filling and final destruction are excluded; the operation's own copying,
+allocation, and shrinking are included. Prefix/suffix sizes matter to what each operation does.
+
+**Question A:** what does discarding lookbehind cost with or without releasing spare capacity?
+
+| Consumed prefix | Unread suffix | Compact (keep 64 KiB capacity) | Compact and shrink (suffix-sized capacity) |
+| --- | --- | ---: | ---: |
+| 8 KiB | 56 KiB | 1.13 µs | 1.12 µs |
+| 56 KiB | 8 KiB | 230.4 ns | 238.9 ns |
+
+These operations discard the prefix. Their resulting capacity differs, so choose based on
+whether the spare capacity is still useful. The small timing differences here do not establish
+that shrinking is free: allocator behavior and later reuse/drop costs are outside that claim.
+Both operations move the unread suffix to the start; the larger suffix costs more in this run.
+
+**Question B:** what if the prefix must survive independently? `take_consumed` returns a Buffer;
+`copy_prefix` copies that prefix to a Vec, then compacts and shrinks the reader. Both return the
+same prefix bytes and leave the same suffix bytes in a suffix-sized reader buffer.
+
+| Consumed prefix | Unread suffix | Take consumed | Copy prefix, compact, shrink | Take / copy (A / B) |
+| --- | --- | ---: | ---: | ---: |
+| 8 KiB | 56 KiB | 2.32 µs | 1.30 µs | 1.78× / 1.82× |
+| 56 KiB | 8 KiB | 316.5 ns | 2.03 µs | 0.16× / 0.16× |
+
+**Conclusion:** the preferred timing reverses with the split. For the small prefix/large suffix,
+copying the prefix costs less; for the large prefix/small suffix, transfer takes about 16% of
+the copy recipe's time. This is consistent with the different bytes each recipe copies, but
+the benchmark does not isolate copying from allocation/shrink costs. Compare these owned
+alternatives to each other, not to `compact`, which does not preserve an owned prefix. Neither
+variant is shown to be allocation-free, and a Buffer and Vec have different APIs.
+
+## 4. Initial capacity and growth
+
+**Question:** how long does it take to construct, fill through EOF, and drop a reader for the
+same **24 KiB input**, with a 32 KiB maximum? Here both runs' times are shown because the gain
+from pre-sizing changed noticeably between them. The final capacities are checked by the harness.
+
+| Initial capacity | Final capacity | Run A | Run B | Time / 8 KiB start (A / B) |
+| --- | --- | ---: | ---: | ---: |
+| 8 KiB | 24 KiB | 666.9 ns | 539.5 ns | 1.00× / 1.00× |
+| 24 KiB | 24 KiB | 431.3 ns | 497.2 ns | 0.65× / 0.92× |
+| 32 KiB | 32 KiB | 424.3 ns | 466.6 ns | 0.64× / 0.86× |
+
+**Conclusion:** pre-sizing lowered time for this known input in both runs, but the exact-sized
+case's reduction ranged from about 8% to 35%. The extra-capacity case retained 8 KiB more than
+the input. An exactly full initial buffer can still grow for the read that discovers EOF;
+final capacity alone does not describe its allocation history. These lifecycle timings do not
+settle a generally optimal capacity or isolate reallocation cost.
+
+## Reproduce these observations
+
+Measured code: `0ae007a939af9331617e9b1d150100599f098dbd`, based on main after PR #8.
+The following documentation commit adds this report without changing the measured Rust code.
+
+- Date: 2026-09-27. CPU: Intel Core i9-11900K, advertised 3.50 GHz.
+- OS/target: Linux `7.2.7-zen1-1-zen`, `x86_64-unknown-linux-gnu`.
+- Compiler: `rustc 1.98.1 (48a229cea 2026-09-01)`, LLVM 22.1.8; standard optimized bench profile.
+- Criterion 0.8.2, dependency resolution in [baseline.lock](baseline.lock).
   SHA-256: `4196999a51c33b3f2fd4b59f66a0923d7d2f587659945a81c5a09b0d23ab7776`.
-- No CPU pinning or frequency controls were applied. Background system load was not controlled.
-  Other crate validation jobs were kept outside this timing run.
+- CPU 0 governor reported `powersave`. No affinity or frequency controls were applied.
+  Background load was not controlled; other crate checks were kept outside the timed runs.
 
 ```bash
 cargo bench --bench reader -- --warm-up-time 1 --measurement-time 2 \
-  --sample-size 30 --save-baseline initial
+  --sample-size 30 --save-baseline review-a
+cargo bench --bench reader -- --warm-up-time 1 --measurement-time 2 \
+  --sample-size 30 --save-baseline review-b
 ```
 
-All correctness preflights passed. Values below are nanoseconds per iteration (the whole input
-for sequential/records/growth, one operation for retention), with Criterion's point estimate
-and 95% confidence interval. These intervals quantify this run, not variation across machines
-or independent sessions. Thirty samples and short measurement windows make this an initial
-observation; use the normal defaults and repeated sessions for performance decisions.
-
-| Case | Estimate (ns) | 95% interval (ns) |
-| --- | ---: | ---: |
-| `growth/32768` | 476.259 | 471.973–481.084 |
-| `growth/8192` | 547.073 | 542.620–551.943 |
-| `records/bufreader_copied/64` | 806.948 | 801.064–812.949 |
-| `records/bufreader_copied/8192` | 38567.811 | 38173.108–39056.957 |
-| `records/bufreader_copied/8193` | 42270.312 | 41687.736–42890.545 |
-| `records/reader_borrowed/64` | 2980.378 | 2930.393–3023.858 |
-| `records/reader_borrowed/8192` | 212400.774 | 210474.191–214491.968 |
-| `records/reader_borrowed/8193` | 209273.212 | 206962.038–211140.226 |
-| `retention/compact/57344` | 225.688 | 224.674–226.699 |
-| `retention/compact/8192` | 1231.039 | 1201.389–1272.170 |
-| `retention/compact_and_shrink/57344` | 253.056 | 250.285–256.460 |
-| `retention/compact_and_shrink/8192` | 1172.395 | 1138.685–1222.816 |
-| `retention/take_consumed/57344` | 337.708 | 333.674–343.130 |
-| `retention/take_consumed/8192` | 2383.451 | 2367.805–2400.389 |
-| `sequential/bufreader/1024` | 43.327 | 42.844–43.810 |
-| `sequential/bufreader/1048576` | 25605.829 | 25498.047–25709.812 |
-| `sequential/bufreader/8192` | 123.584 | 122.709–124.289 |
-| `sequential/reader/1024` | 86.998 | 86.154–87.932 |
-| `sequential/reader/1048576` | 27561.419 | 27377.502–27772.000 |
-| `sequential/reader/8192` | 240.371 | 239.558–241.027 |
-
-`BufReader` took less time in the measured sequential and record pairs on this host. The record
-recipes have different ownership behavior and search implementations; the measurement does not
-identify which component explains the difference. The growth case includes initial allocation,
-so it does not isolate reallocation cost. Compaction and compact-then-shrink intervals overlap
-for the smaller consumed prefix; do not infer that adding a shrink makes compaction faster.
-No result establishes a universal ordering, allocator count, memory footprint, or CI threshold.
+All 41 workloads passed their output checks in both runs. CSV estimates use Criterion's slope
+when available and mean otherwise, with its per-run 95% intervals. Those intervals do not capture
+all cross-run variation; the growth results illustrate why repeated runs matter. Read the
+[methodology](README.md) for precise timing and ownership boundaries. These are warm memory
+workloads, not disk/network, short-read, concurrent, allocation-count, or RSS measurements.
