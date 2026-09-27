@@ -72,3 +72,7 @@ test = true
 [[example]]
 name = "retained_prefix"
 test = true
+
+[[example]]
+name = "binary_frames"
+test = true
