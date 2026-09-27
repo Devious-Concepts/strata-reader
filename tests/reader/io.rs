@@ -7,44 +7,59 @@ use strata_reader::{DynamicRead, DynamicReadExt, Reader};
 /// Revisit a buffered header, then use an ordinary seek and Read consumer for its body.
 #[test]
 fn test_standard_io_and_relative_seek_respect_the_logical_position() {
+    // Filling reads ahead to the end, but the logical position follows consumption
     let mut reader = Reader::new(Cursor::new(b"header:payload"));
     reader.fill_until(b':').unwrap();
     reader.consume(7);
-    assert_eq!(reader.stream_position().unwrap(), 7);
+    let position = reader.stream_position().unwrap();
     let inner_position = reader.get_ref().position();
+
+    assert_eq!(position, 7);
+    assert_eq!(inner_position, 14);
+
+    // Revisit the header within retained data without moving the underlying cursor
     reader.seek_relative(-7).unwrap();
+
     assert_eq!(reader.get_ref().position(), inner_position);
     assert_eq!(reader.peek(7), b"header:");
 
     let mut header = [0; 7];
     reader.read_exact(&mut header).unwrap();
+
     assert_eq!(&header, b"header:");
     assert_eq!(reader.peek_behind(7), &header);
-    reader.seek(SeekFrom::Current(2)).unwrap();
+
+    // An ordinary seek is relative to the logical position and invalidates retained bytes
+    let position = reader.seek(SeekFrom::Current(2)).unwrap();
+
+    assert_eq!(position, 9);
     assert!(reader.buffer().is_empty());
-    assert_eq!(reader.stream_position().unwrap(), 9);
+
     let mut rest = String::new();
     reader.read_to_string(&mut rest).unwrap();
+
     assert_eq!(rest, "yload");
 }
 
 /// Call the generic predicate wrapper through a trait object after consuming an earlier record.
 #[test]
 fn test_dynamic_trait_object_checks_existing_unconsumed_data() {
+    // The generic caller receives only the trait object, after the first line was consumed
     let mut reader = Reader::new(Cursor::new(b"old\nnew\n"));
     reader.fill_to_end().unwrap();
     reader.consume(4);
     let dynamic: &mut dyn DynamicRead = &mut reader;
     let mut seen = Vec::new();
-    assert_eq!(
-        dynamic
-            .fill_while(|bytes| {
-                seen.extend_from_slice(bytes);
-                !bytes.contains(&b'\n')
-            })
-            .unwrap(),
-        0
-    );
+
+    let len = dynamic
+        .fill_while(|bytes| {
+            seen.extend_from_slice(bytes);
+            !bytes.contains(&b'\n')
+        })
+        .unwrap();
+
+    // The existing second line satisfies the predicate without reading or exposing lookbehind
+    assert_eq!(len, 0);
     assert_eq!(seen, b"new\n");
     assert_eq!(dynamic.pos(), 4);
     assert_eq!(dynamic.buffer(), b"old\nnew\n");
