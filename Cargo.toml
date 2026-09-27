@@ -10,7 +10,6 @@ categories = ["data-structures", "parsing"]
 license = "MPL-2.0"
 readme = "README.md"
 include = [
-  "examples/**",
   "src/buffer.rs",
   "src/buffer/tests.rs",
   "src/constants.rs",
@@ -21,6 +20,7 @@ include = [
   "src/reader/tests.rs",
   "Cargo.toml",
   "Cargo.lock",
+  "examples/**",
   "CHANGELOG.md",
   "CONTRIBUTING.md",
   "LICENSE",

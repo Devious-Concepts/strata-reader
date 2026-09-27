@@ -63,6 +63,48 @@ assert_eq!(reader.peek(5), b"value");
 reader.compact();
 ```
 
+## Runnable examples
+
+Start with [records](examples/records.rs), a complete program that fills through a newline,
+consumes one record, inspects its retained bytes, and compacts before continuing:
+
+```bash
+cargo run --example records
+# Or supply a file containing LF-terminated records:
+cargo run --example records -- path/to/records.txt
+```
+
+With no argument it prints:
+
+```text
+12 bytes: name=Strata
+15 bytes: mode=read-only
+```
+
+The example handles records as bytes and sets an 8 KiB buffer limit, including the newline.
+It rejects a full buffer without a delimiter and an unterminated final record; these are choices
+of this example, not mandatory library policies. Dynamic fills can stop at the capacity limit
+or EOF, or read ahead past a delimiter, so the example checks the buffered data before consuming.
+Errors from reading or writing are returned to the caller. Output already written is not rolled
+back on failure.
+
+[retained_prefix](examples/retained_prefix.rs) shows a different ownership choice: keep a
+consumed header in an owned `Buffer` while continuing with its body, then inspect the header
+after dropping the reader. It runs entirely on built-in sample input:
+
+```bash
+cargo run --example retained_prefix
+```
+
+```text
+body: hello
+saved header: kind=text
+```
+
+Both examples use only this crate and the standard library. Their output and error-policy tests
+run with `cargo test --examples` and ordinary `cargo test`; run the commands above to exercise
+the actual entry points as well.
+
 ## Configuring capacity
 
 ```rust
