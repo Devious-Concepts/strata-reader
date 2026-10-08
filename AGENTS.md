@@ -30,3 +30,9 @@ Single-crate library with four modules:
 Key design: `Buffer` does the heavy lifting; the `Reader` delegates to it while enforcing
 `max_capacity` and providing the trait impls. Tests live in nested `tests.rs` submodules per
 module (`src/<module>/tests.rs`).
+
+## CI
+
+`.forgejo/workflows/verify.yml` runs the three stages of `RELEASING.md` as separate jobs on the
+`home-ci` runner, by manual dispatch only. Keep its commands identical to `RELEASING.md` when
+either changes.
