@@ -1,0 +1,31 @@
+# Merge checks: runs the fast checks from CONTRIBUTING.md on every pull request. Keep the commands
+# identical to CONTRIBUTING.md. A new push to a pull request cancels its older run. The release
+# stages run on demand from release-checks.yml.
+name: Merge checks
+on:
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  fast:
+    name: Fast checks
+    runs-on: home-ci
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install the development compiler from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-targets --all-features
+      - run: cargo test --doc --all-features
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
