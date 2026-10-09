@@ -23,7 +23,7 @@ Single-crate library with four modules:
 - **`reader`**, `Reader<R>` + `ReaderBuilder<R>`: wraps any `Read` with a `Buffer`,
   implements `Read`, `BufRead`, `DynamicRead`, and `Seek`. Treat this module as a work in
   progress rather than a style/reference target.
-- **`constants`**, `CHUNK_SIZE` (8 KiB), `DEFAULT_MAX_CAPACITY` (256 MiB), and the internal
+- **`constants`**, `CHUNK_SIZE` (8 KiB), `DEFAULT_MAX_CAPACITY` (32 MiB), and the internal
   `MAX_SUPPORTED_CAPACITY` / `MAX_EXPONENTIAL_CAPACITY`. All buffer capacities are multiples of
   `CHUNK_SIZE`; the internal max constants are technical ceilings, not public tuning knobs.
 
