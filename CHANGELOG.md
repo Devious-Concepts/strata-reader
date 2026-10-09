@@ -123,7 +123,7 @@ dynamically growing buffer and explicit memory control.
 #### Constants and limits
 
 - `CHUNK_SIZE` (8 KiB) as the public chunk alignment.
-- `DEFAULT_MAX_CAPACITY` (256 MiB) as the default ceiling for new readers.
+- `DEFAULT_MAX_CAPACITY` (32 MiB) as the default ceiling for new readers.
 - Internal `MAX_SUPPORTED_CAPACITY` and `MAX_EXPONENTIAL_CAPACITY` ceilings
   that clamp growth safely; these are technical limits, not tuning knobs.
 
