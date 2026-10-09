@@ -1,7 +1,7 @@
-# Runs the three stages of the release gate in RELEASING.md on demand, one job per stage.
-# Keep the commands identical to RELEASING.md. Manual dispatch only: no push or pull request
-# triggers.
-name: Verify
+# Release checks: runs the three stages of the release gate in RELEASING.md on demand, one job
+# per stage. Keep the commands identical to RELEASING.md. Manual dispatch only: no push or pull
+# request triggers.
+name: Release checks
 on:
   workflow_dispatch:
 jobs:

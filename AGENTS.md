@@ -33,6 +33,6 @@ module (`src/<module>/tests.rs`).
 
 ## CI
 
-`.forgejo/workflows/verify.yml` runs the three stages of `RELEASING.md` as separate jobs on the
-`home-ci` runner, by manual dispatch only. Keep its commands identical to `RELEASING.md` when
-either changes.
+`.forgejo/workflows/release-checks.yml` runs the three stages of `RELEASING.md` as separate jobs
+on the `home-ci` runner, by manual dispatch only. Keep its commands identical to `RELEASING.md`
+when either changes.
