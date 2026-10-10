@@ -26,28 +26,35 @@ fn copy_prefix(reader: &mut Reader<Cursor<&[u8]>>) -> Vec<u8> {
 
 pub(super) fn bench(c: &mut Criterion) {
     let data: Vec<_> = (0u8..=255).cycle().take(8 * CHUNK_SIZE).collect();
+    // Validation input with a distinct byte per chunk, so a kept prefix cannot pass as the suffix
+    let check: Vec<_> = (0..data.len())
+        .map(|index| u8::try_from(index / CHUNK_SIZE).unwrap())
+        .collect();
     let mut group = c.benchmark_group("retention");
     for consumed in [CHUNK_SIZE, 7 * CHUNK_SIZE] {
         // Both discard variants preserve the suffix; only one releases its spare capacity
-        let mut compacted = retained_reader(&data, consumed);
+        let mut compacted = retained_reader(&check, consumed);
         compacted.compact();
-        assert_eq!(compacted.buffer(), &data[consumed..]);
-        assert_eq!(compacted.capacity(), data.len());
+        assert_eq!(compacted.pos(), 0);
+        assert_eq!(compacted.buffer(), &check[consumed..]);
+        assert_eq!(compacted.capacity(), check.len());
         compacted.shrink();
-        assert_eq!(compacted.buffer(), &data[consumed..]);
-        assert_eq!(compacted.capacity(), data.len() - consumed);
+        assert_eq!(compacted.buffer(), &check[consumed..]);
+        assert_eq!(compacted.capacity(), check.len() - consumed);
 
         // The owned variants preserve both byte sequences, despite different return types
-        let mut transferred = retained_reader(&data, consumed);
+        let mut transferred = retained_reader(&check, consumed);
         let prefix = transferred.take_consumed();
-        assert_eq!(prefix.buf(), &data[..consumed]);
+        assert_eq!(prefix.buf(), &check[..consumed]);
         assert_eq!(prefix.pos(), consumed);
-        assert_eq!(transferred.buffer(), &data[consumed..]);
-        assert_eq!(transferred.capacity(), data.len() - consumed);
-        let mut copied = retained_reader(&data, consumed);
+        assert_eq!(transferred.pos(), 0);
+        assert_eq!(transferred.buffer(), &check[consumed..]);
+        assert_eq!(transferred.capacity(), check.len() - consumed);
+        let mut copied = retained_reader(&check, consumed);
         let prefix = copy_prefix(&mut copied);
-        assert_eq!(prefix, &data[..consumed]);
-        assert_eq!(copied.buffer(), &data[consumed..]);
+        assert_eq!(prefix, &check[..consumed]);
+        assert_eq!(copied.pos(), 0);
+        assert_eq!(copied.buffer(), &check[consumed..]);
         assert_eq!(copied.capacity(), transferred.capacity());
 
         group.bench_function(BenchmarkId::new("compact", consumed), |b| {

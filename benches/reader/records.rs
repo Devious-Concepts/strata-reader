@@ -56,6 +56,19 @@ fn retained_records(
     }
 }
 
+/// Runs a recipe over a validation input and checks that it visits exactly its records, in order.
+fn check_records(
+    check: &[u8],
+    size: usize,
+    run: impl FnOnce(&mut dyn FnMut(&[u8])) -> io::Result<usize>,
+) {
+    let mut expected = check.chunks_exact(size);
+    let count = run(&mut |bytes| assert_eq!(Some(bytes), expected.next())).unwrap();
+
+    assert_eq!(count, 64);
+    assert!(expected.next().is_none());
+}
+
 pub(super) fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("records");
     // Sizes include LF: many records per buffer, exactly one, and a record requiring growth
@@ -64,35 +77,25 @@ pub(super) fn bench(c: &mut Criterion) {
         record.push(b'\n');
         let data = record.repeat(64);
 
-        // Check every record's boundaries and contents, not just total bytes processed
-        let mut actual = Vec::new();
-        let count = copied_records(Reader::new(Cursor::new(&data)), |bytes| {
-            assert_eq!(bytes, record);
-            actual.extend_from_slice(bytes);
-        })
-        .unwrap();
-        assert_eq!(count, 64);
-        assert_eq!(actual, data);
-        actual.clear();
-        let count = copied_records(
-            BufReader::with_capacity(CHUNK_SIZE, Cursor::new(&data)),
-            |bytes| {
-                assert_eq!(bytes, record);
-                actual.extend_from_slice(bytes);
-            },
-        )
-        .unwrap();
-        assert_eq!(count, 64);
-        assert_eq!(actual, data);
+        // Validate with an input of the same shape whose records each start with a distinct
+        // non-LF byte, so a skipped, repeated, or misaligned record is detected
+        let mut check = data.clone();
+        for (index, chunk) in check.chunks_exact_mut(size).enumerate() {
+            chunk[0] = b'A' + u8::try_from(index).unwrap();
+        }
+        check_records(&check, size, |visit| {
+            copied_records(Reader::new(Cursor::new(&check)), visit)
+        });
+        check_records(&check, size, |visit| {
+            copied_records(
+                BufReader::with_capacity(CHUNK_SIZE, Cursor::new(&check)),
+                visit,
+            )
+        });
         for compact_each in [true, false] {
-            actual.clear();
-            let count = retained_records(&data, compact_each, |bytes| {
-                assert_eq!(bytes, record);
-                actual.extend_from_slice(bytes);
-            })
-            .unwrap();
-            assert_eq!(count, 64);
-            assert_eq!(actual, data);
+            check_records(&check, size, |visit| {
+                retained_records(&check, compact_each, visit)
+            });
         }
 
         group.throughput(Throughput::Bytes(u64::try_from(data.len()).unwrap()));

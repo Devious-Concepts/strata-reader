@@ -43,8 +43,9 @@ mutation, while the copied record lives in a separate reusable allocation. The b
 also perform their own delimiter-position search. Timings include those differences.
 
 All variants include construction, reading, searching, record processing via `black_box`,
-copying/compaction, EOF, and destruction. Source generation is excluded. Each recipe checks every
-record's contents and boundaries before measurement, and reconstructs the full input as a check.
+copying/compaction, EOF, and destruction. Source generation is excluded. Before measurement, each
+recipe is checked against an input of the same shape whose records each start with a distinct
+byte, so every record's contents, boundaries, and order are verified.
 
 ## Retention: discard the prefix or keep owned bytes?
 
