@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-10-10
+
+Documentation, examples, testing, and project maintenance release. The public
+API, runtime behavior, and MSRV of 1.87.0 are unchanged.
+
+### Added
+
+- Public-API integration tests covering record boundaries, retained data,
+  buffer ownership, seeking, capacity limits, and recovery after I/O errors.
+- Three runnable examples with their own tests: delimiter-separated records,
+  length-prefixed binary frames, and retained headers with streamed payloads.
+- Criterion benchmarks for sequential reads, record processing, buffer growth,
+  and retention, with matched comparison workloads, reproducible methodology,
+  paired baseline measurements, and recorded dependency resolution.
+- A documented release gate covering the development compiler, exact MSRV,
+  package contents, and tests run from the extracted crate.
+- GitHub Actions for pull-request checks and manually dispatched release checks.
+
+### Changed
+
+- Include the integration tests, examples, benchmarks, and supporting documents
+  in the published crate. Criterion is a development-only dependency; the
+  library still has no runtime dependencies.
+- Make GitHub the primary source, issue, PR, and release host. Update package
+  metadata, contribution and template links, the PR prompt, and changelog
+  comparison links. Codeberg remains an optional manual Git mirror.
+
+### Fixed
+
+- Clarify that multi-read fills can grow the buffer, while a single `fill()`
+  and standard I/O operations reuse its existing capacity.
+- Correct `fill_while` predicate timing and explain zero-byte returns and
+  retained partial progress on I/O errors. Its documentation example now runs
+  as a doctest.
+- Clarify ownership of read-ahead after `take_buffer`, allocation and copying
+  in `take_consumed`, and the limits of partial-input recovery with `fill_exact`.
+- Correct the default maximum capacity in the historical 0.1.0 entry to 32 MiB
+  and distinguish the development compiler from the MSRV in contributor notes.
+
 ## [0.1.2] - 2026-09-24
 
 ### Added
@@ -139,6 +178,7 @@ dynamically growing buffer and explicit memory control.
 - Mozilla Public License 2.0.
 - Minimum Supported Rust Version of **1.87.0** on Rust edition 2024.
 
-[0.1.2]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.2
-[0.1.1]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.1
-[0.1.0]: https://codeberg.org/Devious-Concepts/strata-reader/commits/tag/0.1.0
+[0.1.3]: https://github.com/viell-dev/strata-reader/compare/0.1.2...0.1.3
+[0.1.2]: https://github.com/viell-dev/strata-reader/compare/0.1.1...0.1.2
+[0.1.1]: https://github.com/viell-dev/strata-reader/compare/0.1.0...0.1.1
+[0.1.0]: https://github.com/viell-dev/strata-reader/releases/tag/0.1.0
