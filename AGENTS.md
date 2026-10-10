@@ -55,11 +55,12 @@ Key design: `Buffer` does the heavy lifting; the `Reader` delegates to it while 
 
 ## CI
 
-Both workflows run on the `home-ci` runner, which is not always online; queued jobs wait for it.
-Keep each workflow's commands identical to its document when either changes.
+Both workflows use GitHub-hosted Linux runners and read-only repository permissions. Keep each
+workflow's commands identical to its document when either changes.
 
-- `.forgejo/workflows/merge-checks.yml` runs the fast checks from `CONTRIBUTING.md` on every
-  pull request.
-- `.forgejo/workflows/release-checks.yml` runs the three stages of `RELEASING.md` as separate
-  jobs, by manual dispatch only. Pushes to `main` are not checked; dispatch it on `main` after
-  merging when a full result is wanted.
+- `.github/workflows/merge-checks.yml` runs the fast checks from `CONTRIBUTING.md` on every
+  pull request's head commit.
+- `.github/workflows/release-checks.yml` runs the three stages of `RELEASING.md` as separate
+  jobs, by manual dispatch only. Dispatch it on the release branch and verify the run's head SHA
+  before citing it as the release gate. The workflow must exist on `main` before dispatch.
+- Codeberg is a manual Git mirror; its Actions are disabled. Use GitHub for issues and PRs.

@@ -1,7 +1,7 @@
 # Contributing
 
 Thank you for your interest in contributing to `strata-reader`. Issues and pull requests are
-welcome on the [upstream repository](https://codeberg.org/Devious-Concepts/strata-reader).
+welcome on the [upstream repository](https://github.com/viell-dev/strata-reader).
 
 ## Licensing of contributions
 
@@ -54,10 +54,10 @@ description:
   ```
 
   Releases also check the minimum supported compiler and the packaged source; see
-  [RELEASING.md](https://codeberg.org/Devious-Concepts/strata-reader/src/branch/main/RELEASING.md).
+  [RELEASING.md](https://github.com/viell-dev/strata-reader/blob/main/RELEASING.md).
 
 ## Provenance
 
 This document is maintained as part of the
-[strata-template](https://codeberg.org/Devious-Concepts/strata-template) template. The copy in
+[strata-template](https://github.com/viell-dev/strata-template) template. The copy in
 this repository is the version that applies to this project.
