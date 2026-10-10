@@ -5,9 +5,9 @@
 //! Run: `cargo run --example records -- [file]` (omit the optional file for built-in input).
 //! The built-in input prints `12 bytes: name=Strata` and `15 bytes: mode=read-only` on two lines.
 //! Records may contain arbitrary bytes, must end in LF, and must fit in 32 KiB including LF.
-//! These are this program's format choices. It returns I/O errors without retrying; output
-//! already written remains written. For ordinary text lines without retention, `BufRead::lines`
-//! is a simpler starting point.
+//! These are this program's format choices. The library retries interrupted reads; other I/O
+//! errors stop processing, and output already written remains written. For ordinary text lines
+//! without retention, `BufRead::lines` is a simpler starting point.
 
 use std::io::{self, BufRead, Cursor, Read, Write};
 use strata_reader::{DynamicRead, Reader, constants::CHUNK_SIZE};
