@@ -53,12 +53,18 @@ fn test_records_cross_reads_and_transfer_consumed_data() {
     assert_eq!(reader.pos(), 0);
     assert!(reader.peek_behind(1).is_empty());
 
-    // EOF leaves an unterminated tail available for the caller's own record policy
-    reader.fill_until_str("\r\n").unwrap();
+    // EOF leaves an unterminated tail available for the caller's own record policy. One byte
+    // of it was already read ahead with the second record.
     let len = reader.fill_until_str("\r\n").unwrap();
 
+    assert_eq!(len, 3);
     assert_eq!(reader.peek(usize::MAX), b"last");
+
+    // Searching again at EOF reads nothing and keeps the tail
+    let len = reader.fill_until_str("\r\n").unwrap();
+
     assert_eq!(len, 0);
+    assert_eq!(reader.peek(usize::MAX), b"last");
     drop(reader);
 
     assert_eq!(first.buf(), b"first\r\n");

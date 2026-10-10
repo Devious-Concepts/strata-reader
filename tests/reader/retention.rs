@@ -20,8 +20,13 @@ impl<R: Read> Read for ShortReads<R> {
 /// Fill a large input, consume a prefix, then compact and shrink without losing its suffix.
 #[test]
 fn test_growth_compaction_and_explicit_reclamation() {
+    // Three chunks with distinct contents show which part survives each operation
+    let data: Vec<u8> = b"abc"
+        .iter()
+        .flat_map(|&byte| std::iter::repeat_n(byte, CHUNK_SIZE))
+        .collect();
+
     // A single fill uses the initial capacity and stops when that storage is full
-    let data = vec![b'x'; 3 * CHUNK_SIZE];
     let mut reader = Reader::new(Cursor::new(&data));
     let len = reader.fill().unwrap();
 
@@ -42,14 +47,14 @@ fn test_growth_compaction_and_explicit_reclamation() {
     reader.consume(2 * CHUNK_SIZE);
     reader.compact();
 
-    assert_eq!(reader.buffer(), &data[..CHUNK_SIZE]);
+    assert_eq!(reader.buffer(), &data[2 * CHUNK_SIZE..]);
     assert_eq!(reader.pos(), 0);
     assert_eq!(reader.capacity(), 3 * CHUNK_SIZE);
 
     // Shrink explicitly after a large record has passed through
     reader.shrink();
 
-    assert_eq!(reader.buffer(), &data[..CHUNK_SIZE]);
+    assert_eq!(reader.buffer(), &data[2 * CHUNK_SIZE..]);
     assert_eq!(reader.capacity(), CHUNK_SIZE);
 
     reader.discard();
@@ -64,7 +69,7 @@ fn test_growth_compaction_and_explicit_reclamation() {
 fn test_handoff_preserves_read_ahead_and_the_remaining_source() {
     // Only the header is consumed; part of the body is buffered and part is still in the source
     let source = ShortReads {
-        inner: Cursor::new(b"headtailrest"),
+        inner: Cursor::new(b"headtailrestdataleft"),
         limit: 8,
     };
     let mut reader = Reader::new(source);
@@ -80,15 +85,17 @@ fn test_handoff_preserves_read_ahead_and_the_remaining_source() {
     reader.fill().unwrap();
     let (mut source, buffered) = reader.into_parts();
 
-    assert_eq!(buffered.buf(), b"rest");
+    assert_eq!(buffered.buf(), b"restdata");
     assert_eq!(buffered.pos(), 0);
+    assert_eq!(source.inner.position(), 16); // "left" has not been read yet
 
     // The consumer must use both unread buffer regions before continuing with the source
     let mut remaining = saved.buf()[saved.pos()..].to_vec();
     remaining.extend_from_slice(&buffered.buf()[buffered.pos()..]);
-    source.read_to_end(&mut remaining).unwrap();
+    let len = source.read_to_end(&mut remaining).unwrap();
 
-    assert_eq!(remaining, b"tailrest");
+    assert_eq!(len, 4);
+    assert_eq!(remaining, b"tailrestdataleft");
 }
 
 /// Alternate keeping and discarding lookbehind over many refills of one bounded reader.
