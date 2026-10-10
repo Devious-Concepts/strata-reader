@@ -19,16 +19,16 @@ include = [
   "src/reader.rs",
   "src/reader/tests.rs",
   "benches/**",
+  "examples/**",
+  "tests/**",
   "Cargo.toml",
   "Cargo.lock",
-  "examples/**",
   "CHANGELOG.md",
   "CONTRIBUTING.md",
   "LICENSE",
   "LICENSE-CLARIFICATION.md",
   "LICENSE-MIT-0",
   "README.md",
-  "tests/**",
   "rust-toolchain.toml",
 ]
 
