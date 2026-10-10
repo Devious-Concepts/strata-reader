@@ -86,8 +86,8 @@ dependency, with plotting and parallel analysis disabled. Exact output checks ru
 timed loops pass processed bytes to `std::hint::black_box`. All 41 cases also run in smoke mode
 under `cargo test --all-targets --all-features`.
 
-[The result record](BASELINE.md) includes the measured code revision, compiler, CPU/OS, command,
-and two runs. [results.csv](results.csv) preserves every point estimate and 95% confidence
+[The result record](BASELINE.md) includes the measured code, compiler, CPU/OS, command, and two
+runs. [results.csv](results.csv) preserves every point estimate and 95% confidence
 interval. [baseline.lock](baseline.lock) preserves the dependency resolution; the library's root
 lockfile remains untracked. In a separate checkout, copy it to `Cargo.lock` and use `--locked`.
 

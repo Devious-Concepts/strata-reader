@@ -122,8 +122,10 @@ settle a generally optimal capacity or isolate reallocation cost.
 
 ## Reproduce these observations
 
-Measured code: `0ae007a939af9331617e9b1d150100599f098dbd`, based on main after PR #8.
-The following documentation commit adds this report without changing the measured Rust code.
+Measured code: the library as released in 0.1.2 and the timed workloads in `reader.rs` and
+`reader/`. Documentation-only changes to `src/` since the 0.1.2 tag, and the validation and
+documentation changes made after the measurement, do not affect these numbers. Re-measure when
+the library code or a timed workload changes.
 
 - Date: 2026-09-27. CPU: Intel Core i9-11900K, advertised 3.50 GHz.
 - OS/target: Linux `7.2.7-zen1-1-zen`, `x86_64-unknown-linux-gnu`.
