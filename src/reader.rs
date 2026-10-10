@@ -506,7 +506,8 @@ impl<R: ?Sized> Reader<R> {
     ///
     /// The replacement starts at the smallest capacity that fits the unconsumed data; it will
     /// grow as subsequent reads require. This allocates a replacement and copies the unconsumed
-    /// suffix into it. Shrinking the returned buffer may also move its storage.
+    /// suffix into it. Shrinking the returned buffer may also move its storage. When nothing is
+    /// consumed, an empty default buffer is returned and the reader's buffer is left unchanged.
     #[must_use = "use `compact` to discard the consumed data instead"]
     #[inline]
     pub fn take_consumed(&mut self) -> Buffer {
