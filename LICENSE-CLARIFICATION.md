@@ -118,6 +118,6 @@ their contribution.
 ## Provenance
 
 This document is maintained as part of the
-[strata-template](https://codeberg.org/Devious-Concepts/strata-template)
+[strata-template](https://github.com/viell-dev/strata-template)
 template. The copy in this repository is the version that applies to this
 project.

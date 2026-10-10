@@ -2,7 +2,7 @@
 name = "strata-reader"
 version = "0.1.2"
 edition = "2024"
-repository = "https://codeberg.org/Devious-Concepts/strata-reader"
+repository = "https://github.com/viell-dev/strata-reader"
 rust-version = "1.87.0"
 description = "A BufReader with a dynamically growing buffer and manual memory control"
 keywords = ["io", "bufread", "buffer", "reader", "dynamic"]

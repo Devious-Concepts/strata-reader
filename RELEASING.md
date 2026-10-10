@@ -1,7 +1,7 @@
 # Releasing strata-reader
 
 This procedure applies the
-[Rust library verification recipe](https://codeberg.org/Devious-Concepts/strata-template/src/branch/main/ci/rust-library/README.md).
+[Rust library verification recipe](https://github.com/viell-dev/strata-template/blob/main/ci/rust-library/README.md).
 For contributor checks, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 1. Prepare the release commit
